@@ -1,0 +1,16 @@
+<svg viewBox="0 0 400 100" xmlns="http://www.w3.org/2000/svg">
+  <!-- Copper bracket / left shape -->
+  <path d="M5 0 L20 0 L20 42 L45 10 L45 0 L28 0 L5 0 Z" fill="#C45C26"/>
+  <path d="M5 0 L5 100 L20 100 L20 58 L45 90 L45 100 L28 100 L5 100 Z" fill="#C45C26"/>
+  <path d="M5 0 L5 100 L20 100 L20 0 Z" fill="#C45C26"/>
+  
+  <!-- Teal upper triangle -->
+  <polygon points="22,5 22,48 60,5" fill="#2AA7A0"/>
+  <!-- Teal lower triangle -->
+  <polygon points="22,52 22,95 60,95" fill="#2AA7A0"/>
+  <!-- Teal right arrow -->
+  <polygon points="22,42 70,50 22,58" fill="#2AA7A0"/>
+  
+  <!-- BENCHMARK text -->
+  <text x="85" y="66" font-family="Inter, system-ui, sans-serif" font-size="42" font-weight="400" letter-spacing="4" fill="#2AA7A0">BENCHMARK</text>
+</svg>

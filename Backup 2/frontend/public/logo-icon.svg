@@ -1,0 +1,11 @@
+<svg viewBox="0 0 80 100" xmlns="http://www.w3.org/2000/svg">
+  <!-- Copper vertical bar -->
+  <path d="M5 0 L20 0 L20 100 L5 100 Z" fill="#C45C26"/>
+  
+  <!-- Teal upper triangle -->
+  <polygon points="22,5 22,48 65,5" fill="#2AA7A0"/>
+  <!-- Teal right arrow -->
+  <polygon points="22,42 75,50 22,58" fill="#2AA7A0"/>
+  <!-- Teal lower triangle -->
+  <polygon points="22,52 22,95 65,95" fill="#2AA7A0"/>
+</svg>

@@ -1,0 +1,81 @@
+<?php
+
+use App\Jobs\AutoAssignOrders;
+use App\Jobs\AutoReassignOrders;
+use App\Jobs\ComputeWorkerStats;
+use App\Jobs\RefreshDashboardCache;
+use App\Jobs\ResetDailyCounters;
+use App\Jobs\UpdateInactiveUsers;
+use App\Models\User;
+use Illuminate\Foundation\Inspiring;
+use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Schedule;
+
+Artisan::command('inspire', function () {
+    $this->comment(Inspiring::quote());
+})->purpose('Display an inspiring quote');
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SCHEDULED JOBS FOR HIGH-VOLUME SCALABILITY
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Real-time dashboard cache refresh (every minute)
+Schedule::job(new RefreshDashboardCache())
+    ->everyMinute()
+    ->withoutOverlapping()
+    ->description('Pre-compute dashboard statistics for fast retrieval');
+
+// Auto-reassign orders from inactive workers (every 5 minutes)
+// Schedule::job(new AutoReassignOrders(30)) // 30 minutes inactivity threshold
+//     ->everyFiveMinutes()
+//     ->withoutOverlapping()
+//     ->description('Reassign orders from inactive/absent workers');
+
+// Push-based auto-assignment: assign queued orders to available workers (every minute)
+// Schedule::job(new AutoAssignOrders())
+//     ->everyMinute()
+//     ->withoutOverlapping()
+//     ->description('Auto-assign queued orders to available idle workers');
+
+// Smart Assignment: compute worker stats & scores (every 10 minutes)
+// Schedule::job(new ComputeWorkerStats())
+//     ->everyTenMinutes()
+//     ->withoutOverlapping()
+//     ->description('Compute avg_completion_minutes, rejection_rate, assignment_score per worker');
+
+// Reset daily counters at midnight
+Schedule::job(new ResetDailyCounters())
+    ->daily()
+    ->at('00:00')
+    ->withoutOverlapping()
+    ->description('Reset today_completed counters for all users');
+
+// Per CEO Requirements: Mark all users absent at noon (12 PM)
+// Users remove absent mark by logging in
+Schedule::job(new UpdateInactiveUsers())
+    ->daily()
+    ->at('12:00')      // ⏰ DAILY AT 12:00 PM (NOON)
+    ->withoutOverlapping()
+    ->description('Mark all active users as absent at noon - remove upon login');
+
+// Legacy command (optional - can remove later)
+Schedule::command('users:flag-inactive --days=15')
+    ->daily()
+    ->at('12:00')      // ⏰ SAME TIME
+    ->description('Legacy: Flag inactive users');
+
+Schedule::command('app:romio-import')
+    ->everyFiveMinutes()
+    ->withoutOverlapping()
+    ->runInBackground();
+    
+Schedule::command('app:metro-import')
+    ->everyFiveMinutes()
+    ->withoutOverlapping()
+    ->runInBackground();
+
+// LOW LOAD SYSTEM (IMPORTANT)
+Schedule::command('app:safp-import')
+    ->everyTenMinutes()
+    ->withoutOverlapping()
+    ->runInBackground();

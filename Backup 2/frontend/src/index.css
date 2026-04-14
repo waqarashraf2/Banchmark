@@ -1,0 +1,148 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 222.2 84% 4.9%;
+  }
+
+  /* Global form element styles */
+  .input,
+  .select,
+  .textarea {
+    width: 100%;
+    padding: 0.625rem 0.875rem;
+    font-size: 0.875rem;
+    line-height: 1.25rem;
+    background-color: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 0.75rem;
+    color: #0f172a;
+    transition: all 0.2s ease;
+  }
+
+  .input::placeholder,
+  .textarea::placeholder {
+    color: #94a3b8;
+  }
+
+  .input:hover,
+  .select:hover,
+  .textarea:hover {
+    border-color: #cbd5e1;
+  }
+
+  .input:focus,
+  .select:focus,
+  .textarea:focus {
+    outline: none;
+    background-color: #ffffff;
+    border-color: #2AA7A0;
+    box-shadow: 0 0 0 3px rgba(42, 167, 160, 0.1);
+  }
+
+  .select {
+    appearance: none;
+    cursor: pointer;
+    padding-right: 2.5rem;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.75rem center;
+  }
+
+  .label {
+    display: block;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: #64748b;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 0.5rem;
+  }
+
+  .textarea {
+    resize: none;
+  }
+}
+
+@theme {
+  /* Surface colors */
+  --color-surface-primary: #ffffff;
+  --color-surface-secondary: #f8fafc;
+  --color-surface-tertiary: #f1f5f9;
+  
+  /* Ink (text) colors */
+  --color-ink-primary: #0f172a;
+  --color-ink-secondary: #334155;
+  --color-ink-tertiary: #64748b;
+  
+  /* Border colors - deliberately soft */
+  --color-border-subtle: rgba(15, 23, 42, 0.06);
+  --color-border-default: rgba(15, 23, 42, 0.1);
+  
+  /* Brand teal scale */
+  --color-brand-50:  #e6f7f6;
+  --color-brand-100: #b3e8e5;
+  --color-brand-200: #80d9d4;
+  --color-brand-300: #4dcac3;
+  --color-brand-400: #2dbdb5;
+  --color-brand-500: #2AA7A0;
+  --color-brand-600: #239089;
+  --color-brand-700: #1b6f6a;
+  --color-brand-800: #144f4b;
+  --color-brand-900: #0c2f2d;
+
+  /* Accent orange scale */
+  --color-accent-50:  #fdf0e8;
+  --color-accent-100: #f9d3b8;
+  --color-accent-200: #f4b688;
+  --color-accent-300: #ef9958;
+  --color-accent-400: #e07d33;
+  --color-accent-500: #C45C26;
+  --color-accent-600: #a74e20;
+  --color-accent-700: #833d19;
+  --color-accent-800: #5f2c12;
+  --color-accent-900: #3b1b0b;
+
+  /* Legacy aliases */
+  --color-brand-primary: #2AA7A0;
+  --color-brand-primary-hover: #238F89;
+  --color-brand-accent: #C45C26;
+  --color-brand-accent-hover: #A84D1F;
+}
+
+@layer utilities {
+  /* New-order highlight: light green pulse that fades to transparent */
+  @keyframes newOrderHighlight {
+    0%   { background-color: rgba(34, 197, 94, 0.22); }
+    60%  { background-color: rgba(34, 197, 94, 0.12); }
+    100% { background-color: transparent; }
+  }
+
+  .new-order-highlight {
+    animation: newOrderHighlight 5s ease-out forwards;
+  }
+
+  .custom-scrollbar {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-slate-200) transparent;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    background-color: var(--color-slate-200);
+    border-radius: 9999px;
+  }
+  
+  .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+     background-color: var(--color-slate-300);
+  }
+}

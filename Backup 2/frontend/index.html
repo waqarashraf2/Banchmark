@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
+    <link rel="icon" type="image/svg+xml" href="/logo.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Benchmark | Enterprise Management System</title>
+    <script>
+      // Force reload if stale cached chunks are loaded
+      var BUILD_ID = '__BUILD__' + Date.now();
+      window.addEventListener('error', function(e) {
+        if (e.message && (e.message.indexOf('Loading chunk') !== -1 ||
+            e.message.indexOf('Failed to fetch') !== -1 ||
+            e.message.indexOf('Importing a module') !== -1)) {
+          if (!sessionStorage.getItem('chunk_reload')) {
+            sessionStorage.setItem('chunk_reload', '1');
+            window.location.reload();
+          }
+        }
+      });
+      // Clear reload flag on successful load
+      window.addEventListener('load', function() {
+        sessionStorage.removeItem('chunk_reload');
+      });
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
