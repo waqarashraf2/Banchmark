@@ -208,7 +208,7 @@ class UserController extends Controller
         }
 
         // Role hierarchy check: prevent deleting users at same or higher level
-        $roleHierarchy = ['ceo' => 6, 'director' => 5, 'operations_manager' => 4, 'project_manager' => 3, 'accounts_manager' => 3, 'qa' => 2, 'drawer' => 1, 'checker' => 1, 'designer' => 1];
+        $roleHierarchy = ['ceo' => 6, 'director' => 5, 'operations_manager' => 4, 'project_manager' => 3, 'accounts_manager' => 3, 'qa' => 2, 'live_qa' => 2, 'drawer' => 1, 'checker' => 1, 'designer' => 1];
         $authLevel = $roleHierarchy[$authUser->role] ?? 0;
         $targetLevel = $roleHierarchy[$user->role] ?? 0;
 
@@ -229,7 +229,7 @@ class UserController extends Controller
     }
 
     /**
-     * Update user activity timestamp and remove absent mark on login.
+     * Update user activity timestamp.
      */
     public function updateActivity(string $id)
     {
@@ -237,11 +237,10 @@ class UserController extends Controller
         $user->update([
             'last_activity' => now(),
             'inactive_days' => 0,
-            'is_absent' => false,  // Remove absent mark when user logs in
         ]);
 
         return response()->json([
-            'message' => 'Activity updated and absent mark removed',
+            'message' => 'Activity updated',
         ]);
     }
 
@@ -297,29 +296,6 @@ class UserController extends Controller
         return response()->json([
             'message' => 'All work reassigned from user.',
             'data' => $user->fresh(),
-        ]);
-    }
-
-    /**
-     * Toggle user absent status manually (for PM/OM).
-     * POST /users/{id}/toggle-absent
-     */
-    public function toggleAbsent(string $id)
-    {
-        $user = User::findOrFail($id);
-        $oldValue = $user->is_absent;
-        $newValue = !$oldValue;
-
-        $user->update(['is_absent' => $newValue]);
-
-        // Log the change
-        ActivityLog::log('toggled_absent', User::class, $user->id, ['is_absent' => $oldValue], ['is_absent' => $newValue]);
-        \App\Services\AuditService::logUserUpdated($user->id, ['is_absent' => $oldValue], ['is_absent' => $newValue]);
-
-        return response()->json([
-            'message' => 'User absence status toggled',
-            'data' => $user->fresh(),
-            'is_absent' => $newValue,
         ]);
     }
 }

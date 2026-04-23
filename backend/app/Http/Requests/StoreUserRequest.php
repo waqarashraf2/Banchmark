@@ -25,7 +25,7 @@ class StoreUserRequest extends FormRequest
             'name' => 'required|string|max:255',
             'email' => 'required|email|unique:users,email',
             'password' => 'required|string|min:8|confirmed',
-            'role' => 'required|in:ceo,director,operations_manager,project_manager,qa,checker,filler,drawer,designer,accounts_manager',
+            'role' => 'required|in:ceo,director,operations_manager,project_manager,qa,live_qa,checker,filler,drawer,designer,accounts_manager',
             'country' => 'nullable|string|max:255',
             'department' => 'required|in:floor_plan,photos_enhancement',
             'project_id' => 'nullable|exists:projects,id',

@@ -1,0 +1,50 @@
+# Backend (Laravel)
+backend/vendor/
+backend/node_modules/
+backend/.env
+backend/.env.local
+backend/.env.*.local
+backend/storage/logs/
+backend/storage/framework/cache/
+backend/storage/debugbar/
+backend/bootstrap/cache/
+backend/.vscode/
+backend/.idea/
+backend/*.log
+backend/composer.lock
+backend/package-lock.json
+backend/npm-debug.log
+backend/.DS_Store
+backend/Thumbs.db
+
+# Frontend (React)
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+frontend/.env.local
+frontend/.env.*.local
+frontend/npm-debug.log
+frontend/.vscode/
+frontend/.idea/
+frontend/.DS_Store
+frontend/Thumbs.db
+
+# OS and IDE files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.settings/
+
+# System files
+desktop.ini
+.thumbnail.db
+
+# Build and temp files
+*.o
+*.so
+*.out

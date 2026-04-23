@@ -66,8 +66,7 @@ class AuthController extends Controller
         $user->update([
             'current_session_token' => $tokenHash,
             'last_activity' => now(),
-            'is_absent' => false,  // ✅ Remove absent mark on login
-            'inactive_days' => 0,
+            'is_absent' => false,
         ]);
 
         // Create session record
@@ -123,7 +122,6 @@ class AuthController extends Controller
 
     /**
      * Session heartbeat — validates session is still active.
-     * Also removes absent mark if user is active.
      */
     public function sessionCheck(Request $request)
     {
@@ -138,10 +136,7 @@ class AuthController extends Controller
         }
 
         $session->update(['last_activity' => now()]);
-        $user->update([
-            'last_activity' => now(),
-            'is_absent' => false,  // ✅ Remove absent mark on any activity
-        ]);
+        $user->update(['last_activity' => now()]);
 
         return response()->json(['valid' => true]);
     }

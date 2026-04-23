@@ -95,8 +95,9 @@ class NotificationService
             );
         }
     }
-
-    /**
+    
+    
+        /**
      * Order cancelled.
      */
     public static function orderCancelled(Order $order, User $actor, string $reason): void
@@ -110,6 +111,8 @@ class NotificationService
             "/work"
         );
     }
+
+    
 
     /**
      * New order received into the system.

@@ -996,6 +996,12 @@ public function myQueue(Request $request)
         }
     }
 
+    // Keep pending-by-drawer orders out of worker queue panels without
+    // changing any underlying workflow or assignment behavior.
+    $orders = $orders->reject(function ($order) {
+        return data_get($order, 'workflow_state') === 'PENDING_BY_DRAWER';
+    });
+
     return response()->json(['orders' => $orders->values()]);
 }
     /**
@@ -2071,7 +2077,7 @@ public function startTimer(Request $request, int $id)
     public function updateInstruction(Request $request, int $id)
     {
         $request->validate([
-            'instruction' => 'nullable|string|max:500',
+            'instruction' => 'nullable',
             'plan_type' => 'nullable|string|max:255',
             'code' => 'nullable|string|max:255',
             'project_id' => 'nullable|integer|exists:projects,id',

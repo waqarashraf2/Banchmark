@@ -5,6 +5,7 @@ namespace App\Services;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 use DateTime;
 use DateTimeZone;
 use Exception;
@@ -45,6 +46,9 @@ class SaFPImportService
             }
 
             $records = [];
+            $inserted = 0;
+            $skipped = 0;
+            $instructionMaxLength = $this->getInstructionMaxLength();
 
             $nowPK = new DateTime('now', new DateTimeZone('Asia/Karachi'));
 
@@ -65,6 +69,9 @@ class SaFPImportService
                 $dueIn = (clone $receivedAt)->modify('+6 hours');
 
                 $clerkArea = $task['clerk_area'] ?? null;
+                $processorNotes = isset($task['processor_notes']) ? trim((string) $task['processor_notes']) : null;
+                $processorNotes = $processorNotes === '' ? null : $processorNotes;
+                $safeInstruction = $this->normalizeInstructionForInsert($processorNotes, $instructionMaxLength);
 
                 $records[] = [
 
@@ -87,7 +94,7 @@ class SaFPImportService
 
                     // TASK
                     'plan_type' => $task['name'] ?? null,
-                    'instruction' => $task['processor_notes'] ?? null,
+                    'instruction' => $safeInstruction,
                     'current_layer' => 'drawer',
 
                     // ❌ IMPORTANT FIX
@@ -122,10 +129,30 @@ class SaFPImportService
             }
 
             if (!empty($records)) {
+                foreach ($records as $record) {
+                    try {
+                        $result = DB::table($this->table)->insertOrIgnore([$record]);
+                        if ($result === 1) {
+                            $inserted++;
+                        } else {
+                            $skipped++;
+                        }
+                    } catch (Exception $rowException) {
+                        $skipped++;
+                        Log::warning('Project12 Import Row Skipped', [
+                            'order_number' => $record['order_number'] ?? null,
+                            'client_portal_id' => $record['client_portal_id'] ?? null,
+                            'message' => $rowException->getMessage(),
+                        ]);
+                    }
+                }
 
-                DB::table($this->table)->insertOrIgnore($records);
-
-                Log::info('Project12 Import Success: '.count($records).' records inserted or skipped');
+                Log::info('Project12 Import Completed', [
+                    'fetched' => count($records),
+                    'inserted' => $inserted,
+                    'skipped' => $skipped,
+                    'instruction_max_length' => $instructionMaxLength,
+                ]);
 
             } else {
                 Log::warning('Project12 Import: No valid records found');
@@ -134,5 +161,30 @@ class SaFPImportService
         } catch (Exception $e) {
             Log::error('Project12 Import Error: '.$e->getMessage());
         }
+    }
+
+    private function getInstructionMaxLength(): ?int
+    {
+        $column = collect(DB::select("SHOW COLUMNS FROM {$this->table} LIKE 'instruction'"))->first();
+        $type = strtolower((string) ($column->Type ?? ''));
+
+        if (preg_match('/varchar\((\d+)\)/', $type, $matches)) {
+            return (int) $matches[1];
+        }
+
+        return null;
+    }
+
+    private function normalizeInstructionForInsert(?string $instruction, ?int $maxLength): ?string
+    {
+        if ($instruction === null || $instruction === '') {
+            return null;
+        }
+
+        if ($maxLength === null) {
+            return $instruction;
+        }
+
+        return Str::limit($instruction, $maxLength, '');
     }
 }

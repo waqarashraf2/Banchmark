@@ -26,7 +26,7 @@ class UpdateOrderRequest extends FormRequest
             'order_number' => ['sometimes', 'string', Rule::unique('orders', 'order_number')->ignore($this->order)],
             'project_id' => 'sometimes|exists:projects,id',
             'client_reference' => 'nullable|string|max:255',
-            'current_layer' => 'sometimes|in:drawer,checker,filler,qa,designer',
+            'current_layer' => 'sometimes|in:drawer,checker,qa,designer',
             'status' => 'sometimes|in:pending,in-progress,completed,on-hold',
             'assigned_to' => 'nullable|exists:users,id',
             'team_id' => 'nullable|exists:teams,id',

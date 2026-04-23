@@ -220,43 +220,21 @@ class AssignmentEngine
                 'recheck_count'    => $order->recheck_count + 1,
             ]);
 
-            // Transition to rejected state — stays here until manager re-queues
-            // from the Rejected Orders page
+            // Transition to rejected state
             StateMachine::transition($order, $targetState, $actor->id, [
                 'rejection_reason' => $reason,
                 'rejection_code'   => $rejectionCode,
-                'route_to'         => $routeTo,
             ]);
 
-            // Clear assignment so order appears unassigned on the Rejected page
-            $order->update([
-                'assigned_to' => null,
-            ]);
-
-            // ── Sync rejection to crm_order_assignments ──
-            // The dashboard uses COALESCE(coa.workflow_state, qo.workflow_state)
-            // so CRM overlay must also reflect the REJECTED state.
-            $existingCrm = DB::table('crm_order_assignments')
-                ->where('project_id', $order->project_id)
-                ->where('order_number', $order->order_number)
-                ->first();
-
-            $crmData = [
-                'workflow_state' => $targetState,
-                'assigned_to'    => null,
-                'updated_at'     => now(),
-            ];
-
-            if ($existingCrm) {
-                DB::table('crm_order_assignments')
-                    ->where('id', $existingCrm->id)
-                    ->update($crmData);
-            } else {
-                DB::table('crm_order_assignments')->insert(array_merge($crmData, [
-                    'project_id'   => $order->project_id,
-                    'order_number' => $order->order_number,
-                    'created_at'   => now(),
-                ]));
+            // Route to the appropriate queue
+            if ($targetState === 'REJECTED_BY_CHECK') {
+                StateMachine::transition($order, 'QUEUED_DRAW', $actor->id);
+            } elseif ($targetState === 'REJECTED_BY_QA') {
+                $target = ($routeTo === 'draw') ? 'QUEUED_DRAW' : 'QUEUED_CHECK';
+                if ($order->workflow_type === 'PH_2_LAYER') {
+                    $target = 'QUEUED_DESIGN';
+                }
+                StateMachine::transition($order, $target, $actor->id);
             }
 
             // Update actor stats (safely prevent negative values)
@@ -376,7 +354,8 @@ class AssignmentEngine
     }
 
 
-    
+
+
     /**
      * Reassign work from an inactive/terminated user.
      */
@@ -387,7 +366,7 @@ class AssignmentEngine
             $orders = Order::forProject($user->project_id)
                 ->where('assigned_to', $user->id)
                 ->whereIn('workflow_state', [
-                    'IN_DRAW', 'IN_CHECK', 'IN_FILLER', 'IN_QA', 'IN_DESIGN',
+                    'IN_DRAW', 'IN_CHECK', 'IN_QA', 'IN_DESIGN',
                 ])
                 ->get();
         }
@@ -527,7 +506,6 @@ class AssignmentEngine
         return match ($stage) {
             'DRAW'   => $order->attempt_draw + 1,
             'CHECK'  => $order->attempt_check + 1,
-            'FILL'   => $order->attempt_qa + 1,
             'DESIGN' => $order->attempt_draw + 1,
             'QA'     => $order->attempt_qa + 1,
             default  => 1,
@@ -578,25 +556,24 @@ class AssignmentEngine
                     $updates['qa_id']   = $user->id;
                 }
             } elseif ($action === 'submit') {
-                // Worker completed their stage. Use role + state together because
-                // multiple stages can legitimately end up in QUEUED_QA after auto-advance.
-                if (in_array($role, ['drawer', 'designer']) && in_array($state, ['SUBMITTED_DRAW', 'QUEUED_CHECK'])) {
+                // Worker completed their stage
+                if (in_array($state, ['SUBMITTED_DRAW', 'QUEUED_CHECK'])) {
                     $updates['drawer_done'] = 'yes';
                     $updates['drawer_date'] = now()->toDateTimeString();
-                } elseif ($role === 'checker' && in_array($state, ['SUBMITTED_CHECK', 'QUEUED_FILLER', 'QUEUED_QA'])) {
+                } elseif (in_array($state, ['SUBMITTED_CHECK', 'QUEUED_QA', 'QUEUED_FILLER'])) {
                     $updates['checker_done'] = 'yes';
                     $updates['checker_date'] = now()->toDateTimeString();
                     if ((int) $order->project_id === 12) {
                         $updates['current_layer'] = 'filler';
                     }
-                } elseif ($role === 'filler' && in_array($state, ['SUBMITTED_FILLER', 'QUEUED_QA'])) {
+                } elseif (in_array($state, ['SUBMITTED_FILLER', 'QUEUED_QA'])) {
                     $updates['file_uploaded']    = 'yes';
                     $updates['file_upload_date'] = now()->toDateTimeString();
                     $updates['current_layer']    = 'qa';
-                } elseif ($role === 'qa' && in_array($state, ['APPROVED_QA', 'DELIVERED'])) {
+                } elseif (in_array($state, ['APPROVED_QA', 'DELIVERED'])) {
                     $updates['final_upload']  = 'yes';
                     $updates['ausFinaldate']  = now()->toDateTimeString();
-                } elseif ($role === 'designer' && in_array($state, ['SUBMITTED_DESIGN', 'QUEUED_QA'])) {
+                } elseif (in_array($state, ['SUBMITTED_DESIGN', 'QUEUED_QA'])) {
                     // Photos 2-layer: designer done
                     $updates['drawer_done'] = 'yes';
                     $updates['drawer_date'] = now()->toDateTimeString();

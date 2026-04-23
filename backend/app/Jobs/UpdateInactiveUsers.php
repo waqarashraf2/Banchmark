@@ -9,18 +9,13 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 
 /**
- * Daily absence marking system.
- * Runs at 12:00 PM (noon) each day.
- * 
- * Rules:
- * - All active users marked as absent at 12 PM
- * - When user logs in (last_activity updated), absent mark is removed
- * - Users who don't login after 12 PM stay marked absent
- * 
- * Scheduled to run daily at 12:00 PM.
+ * Update inactive_days counter for all users.
+ * Flags users who haven't logged in for 15+ days.
+ * Scheduled to run daily at midnight.
  */
 class UpdateInactiveUsers implements ShouldQueue
 {
@@ -31,31 +26,83 @@ class UpdateInactiveUsers implements ShouldQueue
 
     public function handle(): void
     {
-        Log::info('UpdateInactiveUsers: Daily absence marking at 12 PM');
+        $todayNoon = now()->copy()->setTime(12, 0, 0);
+        $markAbsentCacheKey = 'users_absent_marked_' . now()->toDateString();
 
-        $markedAbsent = 0;
-
-        try {
-            // Mark all active users as absent at 12 PM
-            // This happens every day, and users remove the absent mark by logging in
-            $updated = User::where('is_active', true)
-                ->where('is_absent', false)  // Only mark if not already absent
-                ->update([
-                    'is_absent' => true,
-                    'updated_at' => now(),
-                ]);
-
-            $markedAbsent = $updated;
-
-            Log::info("UpdateInactiveUsers: Marked {$markedAbsent} users as absent at 12 PM");
-
-        } catch (\Exception $e) {
-            Log::error('UpdateInactiveUsers error', [
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString(),
-            ]);
-            throw $e;
+        if (now()->lt($todayNoon)) {
+            Log::info('UpdateInactiveUsers: Skipped absent marking because noon has not been reached yet.');
+            return;
         }
+
+        if (!Cache::add($markAbsentCacheKey, true, now()->endOfDay())) {
+            Log::info('UpdateInactiveUsers: Users already marked absent for today.');
+            return;
+        }
+
+        Log::info('UpdateInactiveUsers: Starting daily inactive user check');
+
+        $inactiveThresholdDays = 15;
+        $flagged = 0;
+        $offlineThreshold = now()->subMinutes(5);
+        $markedAbsent = User::where('is_active', true)
+            ->where('is_absent', false)
+            ->where(function ($query) use ($offlineThreshold) {
+                $query->whereNull('last_activity')
+                    ->orWhere('last_activity', '<=', $offlineThreshold);
+            })
+            ->update(['is_absent' => true]);
+
+        // Update inactive_days for all active users
+        User::where('is_active', true)
+            ->whereNotNull('last_activity')
+            ->chunkById(100, function ($users) use ($inactiveThresholdDays, &$flagged) {
+                foreach ($users as $user) {
+                    $daysSinceLogin = $user->last_activity->diffInDays(now());
+                    
+                    $wasInactive = $user->inactive_days >= $inactiveThresholdDays;
+                    $user->update(['inactive_days' => $daysSinceLogin]);
+                    
+                    // Log if user crossed the threshold
+                    if (!$wasInactive && $daysSinceLogin >= $inactiveThresholdDays) {
+                        AuditService::log(
+                            null,
+                            'USER_FLAGGED_INACTIVE',
+                            'User',
+                            $user->id,
+                            $user->project_id,
+                            ['inactive_days' => $user->getOriginal('inactive_days')],
+                            ['inactive_days' => $daysSinceLogin, 'threshold' => $inactiveThresholdDays]
+                        );
+                        $flagged++;
+                    }
+                }
+            });
+
+        // Users who have never logged in get flagged based on created_at
+        User::where('is_active', true)
+            ->whereNull('last_activity')
+            ->chunkById(100, function ($users) use ($inactiveThresholdDays, &$flagged) {
+                foreach ($users as $user) {
+                    $daysSinceCreation = $user->created_at->diffInDays(now());
+                    
+                    if ($daysSinceCreation >= $inactiveThresholdDays) {
+                        $user->update(['inactive_days' => $daysSinceCreation]);
+                        
+                        AuditService::log(
+                            null,
+                            'USER_FLAGGED_INACTIVE',
+                            'User',
+                            $user->id,
+                            $user->project_id,
+                            null,
+                            ['inactive_days' => $daysSinceCreation, 'reason' => 'Never logged in']
+                        );
+                        $flagged++;
+                    }
+                }
+            });
+
+        Log::info("UpdateInactiveUsers: Completed. Marked {$markedAbsent} users absent and flagged {$flagged} users as inactive.");
     }
 
     public function failed(\Throwable $exception): void

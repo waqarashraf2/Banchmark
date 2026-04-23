@@ -42,7 +42,7 @@ class Order extends Model
         'complexity_weight', 'estimated_minutes', 'order_type',
         'received_at', 'started_at', 'completed_at', 'delivered_at', 'due_date',
         'year', 'month', 'date', 'ausDatein',
-        'code', 'plan_type', 'instruction', 'project_type', 'due_in',
+        'code', 'plan_type', 'instruction', 'project_type', 'bedrooms', 'VARIANT_no', 'due_in',
         'metadata', 'import_source', 'import_log_id',
         'recheck_count', 'rejected_by', 'rejected_at',
         'rejection_reason', 'rejection_type', 'checker_self_corrected',

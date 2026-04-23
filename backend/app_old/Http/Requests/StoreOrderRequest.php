@@ -25,7 +25,7 @@ class StoreOrderRequest extends FormRequest
             'order_number' => 'required|string|unique:orders,order_number',
             'project_id' => 'required|exists:projects,id',
             'client_reference' => 'nullable|string|max:255',
-            'current_layer' => 'required|in:drawer,checker,filler,qa,designer',
+            'current_layer' => 'required|in:drawer,checker,qa,designer',
             'status' => 'sometimes|in:pending,in-progress,completed,on-hold',
             'assigned_to' => 'nullable|exists:users,id',
             'team_id' => 'nullable|exists:teams,id',

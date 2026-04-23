@@ -674,6 +674,7 @@ private function processCsvString(string $csvText, Project $project, OrderImport
                 'batch_number'=> 'batch_number',
                 'VARIANT_no'  => 'VARIANT_no',
                 'project_type'=> 'project_type',
+                'bedrooms'    => 'bedrooms',
             ];
 
             foreach ($csvToDbMap as $csvField => $dbColumn) {

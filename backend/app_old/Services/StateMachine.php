@@ -120,9 +120,11 @@ class StateMachine
             $updates['delivered_at'] = now();
             $updates['completed_at'] = now();
             $updates['status'] = 'completed';
+            $updates['assigned_to'] = null;
         }
         if ($toState === 'CANCELLED') {
             $updates['status'] = 'cancelled';
+            $updates['assigned_to'] = null;
         }
         if ($toState === 'ON_HOLD') {
             $updates['is_on_hold'] = true;
@@ -148,6 +150,11 @@ class StateMachine
 
         // Clear assignment when entering QUEUED states
         if (str_starts_with($toState, 'QUEUED_')) {
+            $updates['assigned_to'] = null;
+        }
+
+        // Clear assignment when entering SUBMITTED states
+        if (str_starts_with($toState, 'SUBMITTED_')) {
             $updates['assigned_to'] = null;
         }
 
@@ -183,7 +190,7 @@ class StateMachine
     {
         return $workflowType === 'PH_2_LAYER'
             ? ['DESIGN', 'QA']
-            : ['DRAW', 'CHECK', 'FILL', 'QA'];
+            : ['DRAW', 'CHECK', 'QA'];
     }
 
     /**

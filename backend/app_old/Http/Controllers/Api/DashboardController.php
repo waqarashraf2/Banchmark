@@ -222,12 +222,17 @@ if ($request->query('date')) {
 
         /*
         |--------------------------------------------------------------------------
-        | Plans Remaining (Current Shift Only)
+        | Plans Remaining (Include pending orders from the last 5 days)
         |--------------------------------------------------------------------------
         */
+        $plansRemainingStartLocal = $shiftStartPkt
+            ->copy()
+            ->subDays(4)
+            ->format('Y-m-d H:i:s');
+
         $plansRemainingQuery = DB::table(DB::raw("({$rawUnion}) as orders"))
             ->selectRaw("GREATEST(TIMESTAMPDIFF(HOUR, ?, {$batchDueInExpr}), 0) as remaining_hour_bucket", [$batchNowPkt])
-            ->where('received_at', '>=', $shiftStartLocal)
+            ->where('received_at', '>=', $plansRemainingStartLocal)
             ->where('received_at', '<', $shiftEndLocal)
             ->whereNotNull('due_in')
             ->whereNotIn('workflow_state', ['DELIVERED', 'CANCELLED', 'PENDING_BY_DRAWER']);
@@ -269,6 +274,7 @@ if ($request->query('date')) {
         );
 
         $hourlySlots = collect([
+            ['label' => '10pm to 12am', 'start' => 22, 'end' => 24],
             ['label' => '12am to 02am', 'start' => 0, 'end' => 2],
             ['label' => '02am to 04am', 'start' => 2, 'end' => 4],
             ['label' => '04am to 06am', 'start' => 4, 'end' => 6],
@@ -280,7 +286,6 @@ if ($request->query('date')) {
             ['label' => '04pm to 06pm', 'start' => 16, 'end' => 18],
             ['label' => '06pm to 08pm', 'start' => 18, 'end' => 20],
             ['label' => '08pm to 10pm', 'start' => 20, 'end' => 22],
-            ['label' => '10pm to 12am', 'start' => 22, 'end' => 24],
         ]);
 
         $hourlyCounts = $hourlySlots->map(fn($slot) => [
@@ -935,10 +940,13 @@ if ($request->query('date')) {
         ];
     }
 
+
+
     /**
      * GET /dashboard/project/{id}
      * Project dashboard: queue health, staffing, performance.
      */
+     
     public function project(Request $request, int $id)
     {
         $user = $request->user();
@@ -968,6 +976,30 @@ if ($request->query('date')) {
         // Load ALL users for the project once, then filter in memory
         $allProjectUsers = User::where('project_id', $id)->get();
         $stages = StateMachine::getStages($workflowType);
+        if ($workflowType === 'FP_3_LAYER' && in_array(12, $projectIds, true) && !in_array('FILL', $stages, true)) {
+            $checkIndex = array_search('CHECK', $stages, true);
+            if ($checkIndex === false) {
+                $stages[] = 'FILL';
+            } else {
+                array_splice($stages, $checkIndex + 1, 0, ['FILL']);
+            }
+        }
+        if ($workflowType === 'FP_3_LAYER' && in_array(12, $projectIds, true) && !in_array('FILL', $stages, true)) {
+            $checkIndex = array_search('CHECK', $stages, true);
+            if ($checkIndex === false) {
+                $stages[] = 'FILL';
+            } else {
+                array_splice($stages, $checkIndex + 1, 0, ['FILL']);
+            }
+        }
+        if ($workflowType === 'FP_3_LAYER' && in_array(12, $projectIds, true) && !in_array('FILL', $stages, true)) {
+            $insertAfter = array_search('CHECK', $stages, true);
+            if ($insertAfter === false) {
+                $stages[] = 'FILL';
+            } else {
+                array_splice($stages, $insertAfter + 1, 0, ['FILL']);
+            }
+        }
 
         // Staffing (from in-memory collection)
         $staffing = [];
@@ -1115,6 +1147,182 @@ if ($request->query('date')) {
             ],
         ]);
     }
+    
+    
+    /**
+     * GET /dashboard/project-stats
+     * Project stats based on selected date.
+     */
+     
+    public function projectStats(Request $request)
+    {
+        $date = $request->query('date', today()->toDateString());
+
+        $projects = Project::where('status', 'active')->get();
+        $projectIds = $projects->pluck('id')->toArray();
+
+        // Separate project 16 from others
+        $otherProjectIds = array_filter($projectIds, fn($id) => $id != 16);
+        $hasProject16 = in_array(16, $projectIds);
+        $dateFormatted = (new \DateTime($date))->format('d-m-Y');
+
+        $userCounts = User::whereIn('project_id', $projectIds)
+            ->selectRaw('project_id, COUNT(*) as total_staff, SUM(CASE WHEN is_absent = 0 THEN 1 ELSE 0 END) as active_staff')
+            ->groupBy('project_id')
+            ->get()
+            ->keyBy('project_id');
+
+        // RECEIVED COUNTS: project 16 uses date column, others use received_at
+        $receivedCounts = collect();
+        if (!empty($otherProjectIds)) {
+            $otherReceived = Order::queryAcrossProjects($otherProjectIds, function ($q, $pid) use ($date) {
+                $q->whereDate('received_at', $date)
+                    ->selectRaw('? as project_id, COUNT(*) as cnt', [$pid])
+                    ->groupBy('project_id');
+            });
+            $receivedCounts = $receivedCounts->concat($otherReceived);
+        }
+        if ($hasProject16) {
+            $table16 = \App\Services\ProjectOrderService::getTableName(16);
+            if (self::tableExists($table16) && self::columnExists($table16, 'date')) {
+                $project16Received = Order::queryAcrossProjects([16], function ($q, $pid) use ($dateFormatted) {
+                    $q->where('date', $dateFormatted)
+                        ->selectRaw('? as project_id, COUNT(*) as cnt', [$pid])
+                        ->groupBy('project_id');
+                });
+                $receivedCounts = $receivedCounts->concat($project16Received);
+            }
+        }
+        $receivedCounts = $receivedCounts->pluck('cnt', 'project_id');
+
+        // COMPLETED COUNTS: project 16 uses date column, others use received_at
+        $completedCounts = collect();
+        if (!empty($otherProjectIds)) {
+            $otherCompleted = Order::queryAcrossProjects($otherProjectIds, function ($q, $pid) use ($date) {
+                $q->where('workflow_state', 'DELIVERED')
+                    ->whereDate('received_at', $date)
+                    ->selectRaw('? as project_id, COUNT(*) as cnt', [$pid])
+                    ->groupBy('project_id');
+            });
+            $completedCounts = $completedCounts->concat($otherCompleted);
+        }
+        if ($hasProject16) {
+            $table16 = \App\Services\ProjectOrderService::getTableName(16);
+            if (self::tableExists($table16) && self::columnExists($table16, 'date')) {
+                $project16Completed = Order::queryAcrossProjects([16], function ($q, $pid) use ($dateFormatted) {
+                    $q->where('workflow_state', 'DELIVERED')
+                        ->where('date', $dateFormatted)
+                        ->selectRaw('? as project_id, COUNT(*) as cnt', [$pid])
+                        ->groupBy('project_id');
+                });
+                $completedCounts = $completedCounts->concat($project16Completed);
+            }
+        }
+        $completedCounts = $completedCounts->pluck('cnt', 'project_id');
+
+        // UNTOUCHED COUNTS: project 16 uses date column, others use received_at
+        $untouchedCounts = collect();
+        if (!empty($otherProjectIds)) {
+            $otherUntouched = Order::queryAcrossProjects($otherProjectIds, function ($q, $pid) use ($date) {
+                $q->whereDate('received_at', $date)
+                    ->whereNull('assigned_to')
+                    ->whereNotIn('workflow_state', ['DELIVERED', 'CANCELLED'])
+                    ->selectRaw('? as project_id, COUNT(*) as cnt', [$pid])
+                    ->groupBy('project_id');
+            });
+            $untouchedCounts = $untouchedCounts->concat($otherUntouched);
+        }
+        if ($hasProject16) {
+            $table16 = \App\Services\ProjectOrderService::getTableName(16);
+            if (self::tableExists($table16) && self::columnExists($table16, 'date')) {
+                $project16Untouched = Order::queryAcrossProjects([16], function ($q, $pid) use ($dateFormatted) {
+                    $q->where('date', $dateFormatted)
+                        ->whereNull('assigned_to')
+                        ->whereNotIn('workflow_state', ['DELIVERED', 'CANCELLED'])
+                        ->selectRaw('? as project_id, COUNT(*) as cnt', [$pid])
+                        ->groupBy('project_id');
+                });
+                $untouchedCounts = $untouchedCounts->concat($project16Untouched);
+            }
+        }
+        $untouchedCounts = $untouchedCounts->pluck('cnt', 'project_id');
+
+        // PENDING COUNTS: project 16 uses date column, others use received_at
+        $pendingCounts = collect();
+        if (!empty($otherProjectIds)) {
+            $otherPending = Order::queryAcrossProjects($otherProjectIds, function ($q, $pid) use ($date) {
+                $q->whereDate('received_at', $date)
+                    ->whereNotIn('workflow_state', ['DELIVERED', 'CANCELLED'])
+                    ->selectRaw('? as project_id, COUNT(*) as cnt', [$pid])
+                    ->groupBy('project_id');
+            });
+            $pendingCounts = $pendingCounts->concat($otherPending);
+        }
+        if ($hasProject16) {
+            $table16 = \App\Services\ProjectOrderService::getTableName(16);
+            if (self::tableExists($table16) && self::columnExists($table16, 'date')) {
+                $project16Pending = Order::queryAcrossProjects([16], function ($q, $pid) use ($dateFormatted) {
+                    $q->where('date', $dateFormatted)
+                        ->whereNotIn('workflow_state', ['DELIVERED', 'CANCELLED'])
+                        ->selectRaw('? as project_id, COUNT(*) as cnt', [$pid])
+                        ->groupBy('project_id');
+                });
+                $pendingCounts = $pendingCounts->concat($project16Pending);
+            }
+        }
+        $pendingCounts = $pendingCounts->pluck('cnt', 'project_id');
+
+        $stats = [];
+        $totals = [
+            'received_orders_today' => 0,
+            'total_staff' => 0,
+            'active_staff' => 0,
+        ];
+
+        foreach ($projects as $project) {
+            $projectId = $project->id;
+            $userCount = $userCounts->get($projectId);
+            $receivedToday = (int) ($receivedCounts->get($projectId, 0));
+            $totalStaff = (int) ($userCount?->total_staff ?? 0);
+            $activeStaff = (int) ($userCount?->active_staff ?? 0);
+
+            $stats[] = [
+                'project_id' => $projectId,
+                'project_name' => $project->name,
+                'received_orders_today' => $receivedToday,
+                'completed_orders_today' => (int) ($completedCounts->get($projectId, 0)),
+                'untouched_orders' => (int) ($untouchedCounts->get($projectId, 0)),
+                'pending_orders' => (int) ($pendingCounts->get($projectId, 0)),
+                'total_staff' => $totalStaff,
+                'active_staff' => $activeStaff,
+            ];
+
+            $totals['received_orders_today'] += $receivedToday;
+            $totals['total_staff'] += $totalStaff;
+            $totals['active_staff'] += $activeStaff;
+        }
+
+        // Order projects so those with today_received orders appear first.
+        $stats = collect($stats)
+            ->sortByDesc('received_orders_today')
+            ->values()
+            ->all();
+
+        // Safely compute overall received orders today across all active project tables.
+        $totals['received_orders_today'] = Order::countAcrossProjects($projectIds, function ($q) use ($date) {
+            $q->whereDate('received_at', $date);
+        });
+
+        return response()->json([
+            'success' => true,
+            'selected_date' => $date,
+            'totals' => $totals,
+            'projects' => $stats,
+        ]);
+    }
+
+
+
 
     /**
      * GET /dashboard/operations
@@ -1565,7 +1773,7 @@ if ($request->query('date')) {
                 if ($crmAssign) {
                     $table = ProjectOrderService::getTableName($user->project_id);
                     $overlay = [];
-                    foreach (['assigned_to','drawer_id','drawer_name','checker_id','checker_name','file_uploader_id','file_uploader_name','qa_id','qa_name','workflow_state','current_layer','dassign_time','cassign_time','fassign_time','drawer_done','checker_done','file_uploaded','final_upload','drawer_date','checker_date','file_upload_date','ausFinaldate'] as $col) {
+                    foreach (['assigned_to','drawer_id','drawer_name','checker_id','checker_name','qa_id','qa_name','workflow_state','dassign_time','cassign_time','drawer_done','checker_done','final_upload','drawer_date','checker_date','ausFinaldate'] as $col) {
                         if (isset($crmAssign->$col) && $crmAssign->$col !== null && $crmAssign->$col !== '') {
                             $overlay[$col] = $crmAssign->$col;
                         }
@@ -1655,7 +1863,7 @@ if ($request->query('date')) {
             // CRM OVERLAY FALLBACK for queue count
             if ($queueCount === 0) {
                 $crmIdCol = ['drawer' => 'drawer_id', 'checker' => 'checker_id', 'filler' => 'file_uploader_id', 'qa' => 'qa_id', 'designer' => 'drawer_id'][$user->role] ?? 'assigned_to';
-                $crmDoneCol = ['drawer' => 'drawer_done', 'checker' => 'checker_done', 'filler' => 'file_uploaded', 'qa' => 'final_upload', 'designer' => 'drawer_done'][$user->role] ?? null;
+                $crmDoneCol = ['drawer' => 'drawer_done', 'checker' => 'checker_done', 'qa' => 'final_upload', 'designer' => 'drawer_done'][$user->role] ?? null;
 
                 $crmQueueCount = DB::table('crm_order_assignments')
                     ->where('project_id', $user->project_id)
@@ -1688,6 +1896,7 @@ if ($request->query('date')) {
             'wip_count' => $user->wip_count,
         ]);
     }
+
 
     /**
      * GET /dashboard/absentees
@@ -1780,6 +1989,7 @@ if ($request->query('date')) {
     );
 
     $viewMode = $request->get('view_mode', 'stage');
+    $noCache = $request->get('no_cache', false) === 'true' || $request->get('no_cache') === true;
 
     // Scope projects for OM
     $scopedProjectIds = null;
@@ -1788,34 +1998,47 @@ if ($request->query('date')) {
     }
 
     // ✅ Normalized cache key (important)
+    // Version hash includes the report configuration to auto-invalidate when projects are changed
+    $reportConfigHash = md5(json_encode(['received_at_projects' => [15, 16]]));
     $cacheKey = "daily_operations_"
         . $fromDate->format('Y-m-d') . "_"
-        . $toDate->format('Y-m-d') . "_{$viewMode}"
+        . $toDate->format('Y-m-d') . "_{$viewMode}_v{$reportConfigHash}"
         . ($scopedProjectIds ? '_om_' . $user->id : '');
 
-    $data = \Illuminate\Support\Facades\Cache::remember(
-        $cacheKey,
-        300,
-        function () use ($fromDate, $toDate, $scopedProjectIds, $viewMode) {
-            $results = [];
-            $current = $fromDate->copy();
+    $data = !$noCache ? \Illuminate\Support\Facades\Cache::get($cacheKey) : null;
 
-            while ($current->lte($toDate)) {
-                $results[] = $this->generateDailyOperationsData(
-                    $current,
-                    $scopedProjectIds,
-                    $viewMode
-                );
-                $current->addDay();
-            }
+    if (!$data) {
+        $results = [];
+        $current = $fromDate->copy();
 
-            return $results;
+        while ($current->lte($toDate)) {
+            $results[] = $this->generateDailyOperationsData(
+                $current,
+                $scopedProjectIds,
+                $viewMode
+            );
+            $current->addDay();
         }
-    );
+
+        $data = $results;
+
+        // Cache the results if not explicitly bypassed
+        if (!$noCache) {
+            \Illuminate\Support\Facades\Cache::put($cacheKey, $data, 300);
+        }
+    }
 
     // ✅ CRITICAL FIX: keep old response format for single date
     if ($fromDate->eq($toDate)) {
-        return response()->json($data[0] ?? []);
+        $response = $data[0] ?? [];
+        // Add debug info showing which projects use received_at
+        $response['_debug'] = [
+            'projects_using_received_at' => [15, 16],
+            'note' => 'For projects 15, 16: "delivered" field actually shows orders RECEIVED (not delivered)',
+            'cache_key' => $cacheKey,
+            'no_cache' => $noCache,
+        ];
+        return response()->json($response);
     }
 
     // ✅ Range response (frontend-safe)
@@ -1825,6 +2048,12 @@ if ($request->query('date')) {
             'to'   => $toDate->format('Y-m-d'),
         ],
         'days' => $data,
+        '_debug' => [
+            'projects_using_received_at' => [15, 16],
+            'note' => 'For projects 15, 16: "delivered" field actually shows orders RECEIVED (not delivered)',
+            'cache_key' => $cacheKey,
+            'no_cache' => $noCache,
+        ],
     ]);
 }
 
@@ -1835,6 +2064,9 @@ if ($request->query('date')) {
      */
     private function generateDailyOperationsData(\Carbon\Carbon $dateObj, ?array $scopedProjectIds = null, string $viewMode = 'stage')
     {
+        // Projects that should be counted from the orders table by received_at only.
+        $receivedAtProjects = [15, 16];
+
         // Get active projects (scoped for OM, all for CEO/Director)
         $query = Project::where('status', 'active')
             ->orderBy('country')
@@ -1867,52 +2099,62 @@ if ($request->query('date')) {
 
             $workflowType = $project->workflow_type ?? 'FP_3_LAYER';
             $isFloorPlan  = $workflowType === 'FP_3_LAYER';
+            $useReceivedAtOrderCounts = in_array((int) $project->id, $receivedAtProjects, true);
+            $receivedBaseQuery = DB::table($tableName);
+
+            if ((int) $project->id === 16 && self::columnExists($tableName, 'date')) {
+                $receivedBaseQuery->where('date', $dateObj->format('d-m-Y'));
+            } else {
+                $receivedBaseQuery->whereDate('received_at', $dateObj);
+            }
 
             // ─── RECEIVED: orders that came in on this date ──────────────────
-            // Use COALESCE for Metro compat (received_at may be null, fall back to ausDatein)
-            $hasAusDatein = self::columnExists($tableName, 'ausDatein');
-            if ($hasAusDatein) {
-                $received = DB::table($tableName)
-                    ->whereDate(DB::raw("COALESCE(received_at, ausDatein)"), $dateObj)
-                    ->count();
-            } else {
-                $received = DB::table($tableName)
-                    ->whereDate('received_at', $dateObj)
-                    ->count();
-            }
+            $received = (clone $receivedBaseQuery)->count();
 
             // ─── DELIVERED: orders finalised on this date ────────────────────
+            // For specific projects, report based on received_at instead of delivered_at
             $hasAusFinal = self::columnExists($tableName, 'ausFinaldate');
             $dateStr = $dateObj->format('Y-m-d');
-            $deliveredQuery = DB::table($tableName)->where('workflow_state', 'DELIVERED');
-            if ($hasAusFinal) {
-                // Normalize ausFinaldate from AEDT to PKT (-6h) for accurate day boundary
-                $deliveredQuery->where(function ($q) use ($dateStr) {
-                    $q->whereRaw("DATE(delivered_at) = ?", [$dateStr])
-                      ->orWhere(function ($q2) use ($dateStr) {
-                          $q2->whereNull('delivered_at')
-                             ->whereRaw("DATE(DATE_ADD(ausFinaldate, INTERVAL -6 HOUR)) = ?", [$dateStr]);
-                      });
-                });
+            
+            if ($useReceivedAtOrderCounts) {
+                // For these projects, "delivered" means received today and already done by status.
+                $delivered = (clone $receivedBaseQuery)
+                    ->where('workflow_state', 'DELIVERED')
+                    ->count();
             } else {
-                $deliveredQuery->whereDate('delivered_at', $dateObj);
+                // Standard logic: count orders delivered on this date
+                $deliveredQuery = DB::table($tableName)->where('workflow_state', 'DELIVERED');
+                if ($hasAusFinal) {
+                    // Normalize ausFinaldate from AEDT to PKT (-6h) for accurate day boundary
+                    $deliveredQuery->where(function ($q) use ($dateStr) {
+                        $q->whereRaw("DATE(received_at) = ?", [$dateStr])
+                          ->orWhere(function ($q2) use ($dateStr) {
+                              $q2->whereNull('delivered_at')
+                                 ->whereRaw("DATE(DATE_ADD(ausFinaldate, INTERVAL -6 HOUR)) = ?", [$dateStr]);
+                          });
+                    });
+                } else {
+                    $deliveredQuery->whereDate('delivered_at', $dateObj);
+                }
+                $delivered = $deliveredQuery->count();
             }
-            $delivered = $deliveredQuery->count();
 
             // ─── PENDING ─────────────────────────────────────────────────────
-            $pending = DB::table($tableName)
-                ->whereNotIn('workflow_state', ['DELIVERED', 'CANCELLED'])
-                ->count();
+            $pending = $useReceivedAtOrderCounts
+                ? (clone $receivedBaseQuery)->whereNotIn('workflow_state', ['DELIVERED', 'CANCELLED'])->count()
+                : DB::table($tableName)->whereNotIn('workflow_state', ['DELIVERED', 'CANCELLED'])->count();
 
             // ─── LAYER WORK (DRAW / CHECK / QA) ─────────────────────────────
             // Try WorkItems first; fall back to project-table date columns
             // NOTE: WorkItem->order is an accessor (not a relationship) because
             // orders live in per-project tables, so we cannot use with('order').
-            $workItems = WorkItem::where('project_id', $project->id)
-                ->where('status', 'completed')
-                ->whereDate('completed_at', $dateObj)
-                ->with(['assignedUser:id,name,email,role'])
-                ->get();
+            $workItems = $useReceivedAtOrderCounts
+                ? collect()
+                : WorkItem::where('project_id', $project->id)
+                    ->where('status', 'completed')
+                    ->whereDate('completed_at', $dateObj)
+                    ->with(['assignedUser:id,name,email,role'])
+                    ->get();
 
             // Bulk-load order numbers from the project table for these work items
             $orderNumberMap = [];
@@ -1933,54 +2175,175 @@ if ($request->query('date')) {
             // so all 3 stages appear on the same day the order was QA-approved.
             $unifiedMode = $viewMode === 'unified';
 
-            foreach ($stages as $stage) {
-                $stageItems = $workItems->where('stage', $stage);
-                $workItemWorkers = $stageItems->groupBy('assigned_user_id')->map(function ($items) use ($orderNumberMap) {
-                    $user = $items->first()->assignedUser;
-                    $orderNums = $items->map(fn($wi) => $orderNumberMap[$wi->order_id] ?? null)->filter()->unique()->values();
-
-                    return [
-                        'id' => $user?->id,
-                        'name' => $user?->name ?? 'Unknown',
-                        'completed' => $items->count(),
-                        'orders' => $orderNums->all(),
-                        'has_more' => $orderNums->count() > 15,
-                    ];
-                })->values();
-
-                $projectTotal = null;
-                $projectWorkers = collect();
+            $buildStageFallback = function (string $stage) use ($layerColumnMap, $tableName, $unifiedMode, $hasAusFinal, $dateObj, $useReceivedAtOrderCounts, $receivedBaseQuery) {
                 $map = $layerColumnMap[$stage] ?? null;
-
-                if ($map && self::columnExists($tableName, $map['date_col'])) {
-                    $stageQuery = $this->buildDailyOperationsStageQuery(
-                        $tableName,
-                        $map,
-                        $stage,
-                        $dateObj,
-                        $unifiedMode,
-                        $hasAusFinal
-                    );
-
-                    $projectTotal = (clone $stageQuery)->count();
-
-                    $missingStageQuery = clone $stageQuery;
-                    $workItemOrderIds = $stageItems->pluck('order_id')->filter()->unique()->values();
-                    if ($workItemOrderIds->isNotEmpty()) {
-                        $missingStageQuery->whereNotIn('id', $workItemOrderIds);
-                    }
-
-                    $projectWorkers = $this->buildDailyOperationsWorkersFromProjectQuery(
-                        $missingStageQuery,
-                        $tableName,
-                        $map
-                    );
+                if (!$map) {
+                    return ['total' => 0, 'workers' => collect()];
                 }
 
-                $layerWork[$stage] = [
-                    'total' => $projectTotal ?? $stageItems->count(),
-                    'workers' => $this->mergeDailyOperationsWorkers($workItemWorkers, $projectWorkers),
-                ];
+                if ($useReceivedAtOrderCounts) {
+                    $stageQuery = clone $receivedBaseQuery;
+
+                    if ($stage === 'DRAW' || $stage === 'DESIGN') {
+                        $stageQuery->where('drawer_done', 'yes');
+                    } elseif ($stage === 'CHECK') {
+                        $stageQuery->where('checker_done', 'yes');
+                    } elseif ($stage === 'QA') {
+                        $stageQuery->where('final_upload', 'yes');
+                    }
+                } else {
+                    if (!self::columnExists($tableName, $map['date_col'])) {
+                        return ['total' => 0, 'workers' => collect()];
+                    }
+
+                    if ($unifiedMode && in_array($stage, ['DRAW', 'CHECK', 'DESIGN']) && $hasAusFinal) {
+                        $dateCol = 'ausFinaldate';
+                        $tzOffset = -6;
+                    } else {
+                        $dateCol = $map['date_col'];
+                        $tzOffset = $map['tz_offset'] ?? 0;
+                    }
+
+                    $dateExpr = $tzOffset !== 0
+                        ? DB::raw("DATE(DATE_ADD({$dateCol}, INTERVAL {$tzOffset} HOUR))")
+                        : DB::raw("DATE({$dateCol})");
+
+                    $stageQuery = DB::table($tableName)->where($dateExpr, $dateObj->format('Y-m-d'));
+                    if ($unifiedMode && $stage === 'DRAW') {
+                        $stageQuery->where('drawer_done', 'yes');
+                    } elseif ($unifiedMode && $stage === 'CHECK') {
+                        $stageQuery->where('checker_done', 'yes');
+                    }
+                }
+
+                $total = (clone $stageQuery)->count();
+                $workers = collect();
+
+                if ($total > 0 && self::columnExists($tableName, $map['id_col'])) {
+                    $workerRows = (clone $stageQuery)
+                        ->whereNotNull($map['id_col'])
+                        ->selectRaw("{$map['id_col']} as worker_id, {$map['name_col']} as worker_name, COUNT(*) as completed, GROUP_CONCAT(order_number ORDER BY order_number SEPARATOR ',') as order_nums")
+                        ->groupBy($map['id_col'], $map['name_col'])
+                        ->get();
+
+                    if ($workerRows->isEmpty() && self::columnExists($tableName, $map['name_col'])) {
+                        $workerRows = (clone $stageQuery)
+                            ->whereNotNull($map['name_col'])
+                            ->where($map['name_col'], '!=', '')
+                            ->selectRaw("NULL as worker_id, {$map['name_col']} as worker_name, COUNT(*) as completed, GROUP_CONCAT(order_number ORDER BY order_number SEPARATOR ',') as order_nums")
+                            ->groupBy($map['name_col'])
+                            ->get();
+                    }
+
+                    $workers = $workerRows->map(function ($row) {
+                        $allOrders = collect(explode(',', $row->order_nums ?? ''))->filter()->unique();
+                        return [
+                            'id'        => $row->worker_id,
+                            'name'      => $row->worker_name ?? 'Unknown',
+                            'completed' => (int) $row->completed,
+                            'orders'    => $allOrders->take(15)->values(),
+                            'has_more'  => $allOrders->count() > 15,
+                        ];
+                    })->values();
+                }
+
+                return ['total' => $total, 'workers' => $workers];
+            };
+
+            if ($workItems->isNotEmpty()) {
+                // ── Standard path: WorkItem records exist ──
+                foreach ($stages as $stage) {
+                    $stageItems = $workItems->where('stage', $stage);
+                    if ($stageItems->isEmpty()) {
+                        $layerWork[$stage] = $buildStageFallback($stage);
+                        continue;
+                    }
+                    $workers = $stageItems->groupBy('assigned_user_id')->map(function ($items) use ($orderNumberMap) {
+                        $user = $items->first()->assignedUser;
+                        $orderNums = $items->map(fn($wi) => $orderNumberMap[$wi->order_id] ?? null)->filter()->unique();
+                        return [
+                            'id'        => $user?->id,
+                            'name'      => $user?->name ?? 'Unknown',
+                            'completed' => $items->count(),
+                            'orders'    => $orderNums->take(15)->values(),
+                            'has_more'  => $orderNums->count() > 15,
+                        ];
+                    })->values();
+
+                    $layerWork[$stage] = ['total' => $stageItems->count(), 'workers' => $workers];
+                }
+            } else {
+                // ── Fallback: query project table date columns (Metro data) ──
+                foreach ($stages as $stage) {
+                    $layerWork[$stage] = $buildStageFallback($stage);
+                    continue;
+
+                    $map = $layerColumnMap[$stage] ?? null;
+                    if (!$map || !self::columnExists($tableName, $map['date_col'])) {
+                        $layerWork[$stage] = ['total' => 0, 'workers' => []];
+                        continue;
+                    }
+
+                    // In unified mode, Drawer and Checker use QA done date (ausFinaldate) 
+                    // so all stages are counted on the same day the order was QA-approved
+                    if ($unifiedMode && in_array($stage, ['DRAW', 'CHECK', 'DESIGN']) && $hasAusFinal) {
+                        $dateCol = 'ausFinaldate';
+                        $tzOffset = -6; // AEDT → PKT
+                    } else {
+                        // Apply timezone normalization (ausFinaldate is AEDT, needs -6h to match PKT)
+                        $dateCol = $map['date_col'];
+                        $tzOffset = $map['tz_offset'] ?? 0;
+                    }
+
+                    if ($tzOffset !== 0) {
+                        $dateExpr = DB::raw("DATE(DATE_ADD({$dateCol}, INTERVAL {$tzOffset} HOUR))");
+                    } else {
+                        $dateExpr = DB::raw("DATE({$dateCol})");
+                    }
+
+                    // In unified mode for DRAW/CHECK, also require the stage work to be done
+                    $stageQuery = DB::table($tableName)->where($dateExpr, $dateObj->format('Y-m-d'));
+                    if ($unifiedMode && $stage === 'DRAW') {
+                        $stageQuery->where('drawer_done', 'yes');
+                    } elseif ($unifiedMode && $stage === 'CHECK') {
+                        $stageQuery->where('checker_done', 'yes');
+                    }
+
+                    $total = (clone $stageQuery)->count();
+
+                    $workers = collect();
+                    if ($total > 0 && self::columnExists($tableName, $map['id_col'])) {
+                        // First try grouping by worker ID
+                        $workerRows = (clone $stageQuery)
+                            ->whereNotNull($map['id_col'])
+                            ->selectRaw("{$map['id_col']} as worker_id, {$map['name_col']} as worker_name, COUNT(*) as completed, GROUP_CONCAT(order_number ORDER BY order_number SEPARATOR ',') as order_nums")
+                            ->groupBy($map['id_col'], $map['name_col'])
+                            ->get();
+
+                        // Fallback: if no ID-based workers, group by name (migrated data)
+                        if ($workerRows->isEmpty() && self::columnExists($tableName, $map['name_col'])) {
+                            $workerRows = (clone $stageQuery)
+                                ->whereNotNull($map['name_col'])
+                                ->where($map['name_col'], '!=', '')
+                                ->selectRaw("NULL as worker_id, {$map['name_col']} as worker_name, COUNT(*) as completed, GROUP_CONCAT(order_number ORDER BY order_number SEPARATOR ',') as order_nums")
+                                ->groupBy($map['name_col'])
+                                ->get();
+                        }
+
+                        $workers = $workerRows->map(function ($row) {
+                            $allOrders = collect(explode(',', $row->order_nums ?? ''))->filter()->unique();
+                            return [
+                                'id'        => $row->worker_id,
+                                'name'      => $row->worker_name ?? 'Unknown',
+                                'completed' => (int) $row->completed,
+                                'orders'    => $allOrders->take(15)->values(),
+                                'has_more'  => $allOrders->count() > 15,
+                            ];
+                        })->values();
+                    }
+
+                    $layerWork[$stage] = ['total' => $total, 'workers' => $workers];
+                }
             }
 
             // ─── QA CHECKLIST / MISTAKE COMPLIANCE ───────────────────────────
@@ -1993,23 +2356,32 @@ if ($request->query('date')) {
             ];
 
             if ($delivered > 0) {
-                // Collect delivered order IDs for today
-                $dlvIdQuery = DB::table($tableName)->where('workflow_state', 'DELIVERED');
-                if ($hasAusFinal) {
-                    $dlvIdQuery->where(function ($q) use ($dateStr) {
-                        $q->whereRaw("DATE(delivered_at) = ?", [$dateStr])
-                          ->orWhere(function ($q2) use ($dateStr) {
-                              $q2->whereNull('delivered_at')
-                                 ->whereRaw("DATE(DATE_ADD(ausFinaldate, INTERVAL -6 HOUR)) = ?", [$dateStr]);
-                          });
-                    });
+                // Collect order IDs for today's data
+                // For received_at projects: orders received on this date
+                // For delivered_at projects: orders delivered on this date
+                if ($useReceivedAtOrderCounts) {
+                    // For these projects, QA/checklist stats also follow the received_at cohort.
+                    $orderIdQuery = clone $receivedBaseQuery;
+                    $ordersIds = $orderIdQuery->pluck('id');
                 } else {
-                    $dlvIdQuery->whereDate('delivered_at', $dateObj);
+                    // Get orders delivered on this date (existing logic)
+                    $dlvIdQuery = DB::table($tableName)->where('workflow_state', 'DELIVERED');
+                    if ($hasAusFinal) {
+                        $dlvIdQuery->where(function ($q) use ($dateStr) {
+                            $q->whereRaw("DATE(received_at) = ?", [$dateStr])
+                              ->orWhere(function ($q2) use ($dateStr) {
+                                  $q2->whereNull('received_at')
+                                     ->whereRaw("DATE(DATE_ADD(ausFinaldate, INTERVAL -6 HOUR)) = ?", [$dateStr]);
+                              });
+                        });
+                    } else {
+                        $dlvIdQuery->whereDate('delivered_at', $dateObj);
+                    }
+                    $ordersIds = $dlvIdQuery->pluck('id');
                 }
-                $deliveredIds = $dlvIdQuery->pluck('id');
 
                 // Try OrderChecklist first (standard system)
-                $checklists = \App\Models\OrderChecklist::whereIn('order_id', $deliveredIds)->get();
+                $checklists = \App\Models\OrderChecklist::whereIn('order_id', $ordersIds)->get();
 
                 if ($checklists->isNotEmpty()) {
                     $checklistStats['total_items']     = $checklists->count();
@@ -2022,7 +2394,7 @@ if ($request->query('date')) {
                         $mt = "project_{$project->id}_{$layer}_mistake";
                         if (self::tableExists($mt)) {
                             $totalMistakes += DB::table($mt)
-                                ->whereIn('order_id', $deliveredIds)
+                                ->whereIn('order_id', $ordersIds)
                                 ->count();
                         }
                     }
@@ -2047,6 +2419,7 @@ if ($request->query('date')) {
                 'received'      => $received,
                 'delivered'     => $delivered,
                 'pending'       => $pending,
+                'report_metric' => $useReceivedAtOrderCounts ? 'received_at' : 'delivered_at',
                 'layers'        => $layerWork,
                 'qa_checklist'  => $checklistStats,
             ];
@@ -2081,11 +2454,17 @@ if ($request->query('date')) {
                 'stage'   => 'Each stage counted by its own done time',
                 'unified' => 'All stages counted by QA done time (same day)',
             ],
+            'report_config' => [
+                'received_at_projects' => $receivedAtProjects,
+                'note' => 'Daily operations metrics in this function are reported based on received_at instead of delivered_at',
+            ],
             'totals'     => $totals,
             'by_country' => $byCountry,
             'projects'   => $projectsData,
         ];
     }
+
+
 
     /**
      * GET /dashboard/project-manager
@@ -2454,6 +2833,14 @@ if ($request->query('date')) {
 
         // ─── 1. Workers by role (single query, then group in memory) ───
         $stages = StateMachine::getStages($workflowType);
+        if ($workflowType === 'FP_3_LAYER' && in_array(12, $projectIds, true) && !in_array('FILL', $stages, true)) {
+            $checkIndex = array_search('CHECK', $stages, true);
+            if ($checkIndex === false) {
+                $stages[] = 'FILL';
+            } else {
+                array_splice($stages, $checkIndex + 1, 0, ['FILL']);
+            }
+        }
         $allWorkers = User::whereIn('project_id', $projectIds)
             ->where('is_active', true)
             ->whereIn('role', array_values(array_intersect_key(StateMachine::STAGE_TO_ROLE, array_flip($stages))))
@@ -2495,27 +2882,30 @@ $endDate = $request->input('end_date');
         // Selected columns
         $selectCols = 'id, order_number, code, plan_type, project_id, client_reference, address, client_name, instruction,'
             . 'workflow_state, priority, assigned_to, '
-            . 'current_layer, '
-            . 'drawer_id, drawer_name, checker_id, checker_name, file_uploader_id, file_uploader_name, qa_id, qa_name, '
-            . 'dassign_time, cassign_time, fassign_time, drawer_done, checker_done, file_uploaded, final_upload, '
-            . 'drawer_date, checker_date, file_upload_date, ausFinaldate, '
+            . 'drawer_id, drawer_name, checker_id, checker_name, qa_id, qa_name, '
+            . 'dassign_time, cassign_time, drawer_done, checker_done, final_upload, '
+            . 'drawer_date, checker_date, ausFinaldate, '
             . 'amend, recheck_count, is_on_hold, '
             . 'due_in, due_date, '
             . 'received_at, delivered_at, created_at';
 
         // Optional columns that may not exist in all project tables
-        $optionalCols = ['VARIANT_no', 'batch_number', 'date'];
+        $optionalCols = [
+            'VARIANT_no', 'batch_number', 'date', 'bedrooms',
+            'current_layer', 'file_uploader_id', 'file_uploader_name',
+            'fassign_time', 'file_uploaded', 'file_upload_date',
+        ];
 
         // Build a UNION of all project tables
         $rawUnion = $this->buildQueueUnionQuery($projectIds, $selectCols, $optionalCols);
 
         // Overlay CRM assignments (survives external cron truncation of project tables)
         // LEFT JOIN crm_order_assignments and COALESCE to prefer CRM values
-        $unionQuery = "SELECT qo.id, qo.order_number, qo.VARIANT_no, qo.batch_number, qo.date, qo.project_id, qo.client_reference, qo.address, qo.client_name, qo.code, qo.plan_type, qo.instruction,"
+        $unionQuery = "SELECT qo.id, qo.order_number, qo.VARIANT_no, qo.batch_number, qo.date, qo.bedrooms, qo.project_id, qo.client_reference, qo.address, qo.client_name, qo.code, qo.plan_type, qo.instruction,"
+            . "COALESCE(NULLIF(coa.current_layer,''), qo.current_layer) as current_layer, "
             . "COALESCE(coa.workflow_state, qo.workflow_state) as workflow_state, "
             . "qo.priority, "
             . "COALESCE(coa.assigned_to, qo.assigned_to) as assigned_to, "
-            . "COALESCE(NULLIF(coa.current_layer,''), qo.current_layer) as current_layer, "
             . "COALESCE(coa.drawer_id, qo.drawer_id) as drawer_id, "
             . "COALESCE(NULLIF(coa.drawer_name,''), qo.drawer_name) as drawer_name, "
             . "COALESCE(coa.checker_id, qo.checker_id) as checker_id, "
@@ -3050,117 +3440,6 @@ if ($startDate || $endDate) {
             return "SELECT {$fallbackCols} FROM `{$firstTable}` WHERE 1=0";
         }
         return implode(' UNION ALL ', $parts);
-    }
-
-    private function buildDailyOperationsStageQuery(
-        string $tableName,
-        array $map,
-        string $stage,
-        \Carbon\Carbon $dateObj,
-        bool $unifiedMode,
-        bool $hasAusFinal
-    ) {
-        if ($unifiedMode && in_array($stage, ['DRAW', 'CHECK', 'DESIGN'], true) && $hasAusFinal) {
-            $dateCol = 'ausFinaldate';
-            $tzOffset = -6;
-        } else {
-            $dateCol = $map['date_col'];
-            $tzOffset = $map['tz_offset'] ?? 0;
-        }
-
-        if ($tzOffset !== 0) {
-            $dateExpr = DB::raw("DATE(DATE_ADD({$dateCol}, INTERVAL {$tzOffset} HOUR))");
-        } else {
-            $dateExpr = DB::raw("DATE({$dateCol})");
-        }
-
-        $stageQuery = DB::table($tableName)->where($dateExpr, $dateObj->format('Y-m-d'));
-
-        if ($unifiedMode && $stage === 'DRAW') {
-            $stageQuery->where('drawer_done', 'yes');
-        } elseif ($unifiedMode && $stage === 'CHECK') {
-            $stageQuery->where('checker_done', 'yes');
-        }
-
-        return $stageQuery;
-    }
-
-    private function buildDailyOperationsWorkersFromProjectQuery($stageQuery, string $tableName, array $map): \Illuminate\Support\Collection
-    {
-        if (!self::columnExists($tableName, $map['id_col'])) {
-            return collect();
-        }
-
-        $nameColumnExists = self::columnExists($tableName, $map['name_col']);
-        $nameSelect = $nameColumnExists ? $map['name_col'] : "NULL";
-        $nameGroup = $nameColumnExists ? ", {$map['name_col']}" : '';
-
-        $workerRows = (clone $stageQuery)
-            ->whereNotNull($map['id_col'])
-            ->selectRaw("{$map['id_col']} as worker_id, {$nameSelect} as worker_name, COUNT(*) as completed, GROUP_CONCAT(order_number ORDER BY order_number SEPARATOR ',') as order_nums")
-            ->groupByRaw("{$map['id_col']}{$nameGroup}")
-            ->get();
-
-        if ($workerRows->isEmpty() && $nameColumnExists) {
-            $workerRows = (clone $stageQuery)
-                ->whereNotNull($map['name_col'])
-                ->where($map['name_col'], '!=', '')
-                ->selectRaw("NULL as worker_id, {$map['name_col']} as worker_name, COUNT(*) as completed, GROUP_CONCAT(order_number ORDER BY order_number SEPARATOR ',') as order_nums")
-                ->groupBy($map['name_col'])
-                ->get();
-        }
-
-        return $workerRows->map(function ($row) {
-            $allOrders = collect(explode(',', $row->order_nums ?? ''))->filter()->unique()->values();
-
-            return [
-                'id' => $row->worker_id,
-                'name' => $row->worker_name ?? 'Unknown',
-                'completed' => (int) $row->completed,
-                'orders' => $allOrders->all(),
-                'has_more' => $allOrders->count() > 15,
-            ];
-        })->values();
-    }
-
-    private function mergeDailyOperationsWorkers(
-        \Illuminate\Support\Collection $primaryWorkers,
-        \Illuminate\Support\Collection $secondaryWorkers
-    ): array {
-        $merged = [];
-
-        foreach ($primaryWorkers->concat($secondaryWorkers) as $worker) {
-            $workerArray = (array) $worker;
-            $orders = collect($workerArray['orders'] ?? [])->filter()->unique()->values();
-            $key = !empty($workerArray['id'])
-                ? 'id:' . $workerArray['id']
-                : 'name:' . strtolower(trim((string) ($workerArray['name'] ?? 'Unknown')));
-
-            if (!isset($merged[$key])) {
-                $merged[$key] = [
-                    'id' => $workerArray['id'] ?? null,
-                    'name' => $workerArray['name'] ?? 'Unknown',
-                    'completed' => (int) ($workerArray['completed'] ?? 0),
-                    'orders' => $orders,
-                ];
-                continue;
-            }
-
-            $merged[$key]['completed'] += (int) ($workerArray['completed'] ?? 0);
-            $merged[$key]['orders'] = $merged[$key]['orders']->concat($orders)->filter()->unique()->values();
-        }
-
-        return collect($merged)->map(function ($worker) {
-            $orders = $worker['orders']->values();
-
-            return [
-                'id' => $worker['id'],
-                'name' => $worker['name'],
-                'completed' => $worker['completed'],
-                'orders' => $orders->take(15)->values(),
-                'has_more' => $orders->count() > 15,
-            ];
-        })->sortByDesc('completed')->values()->all();
     }
 
     /**

@@ -51,7 +51,7 @@ class ComputeWorkerStats implements ShouldQueue
     {
         Log::info('ComputeWorkerStats: Starting worker stats computation');
 
-        $productionRoles = ['drawer', 'checker', 'filler', 'qa', 'designer'];
+        $productionRoles = ['drawer', 'checker', 'qa', 'designer'];
 
         $workers = User::where('is_active', true)
             ->whereIn('role', $productionRoles)

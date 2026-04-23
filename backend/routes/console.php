@@ -53,10 +53,9 @@ Schedule::job(new ResetDailyCounters())
 // Per CEO Requirements: Mark all users absent at noon (12 PM)
 // Users remove absent mark by logging in
 Schedule::job(new UpdateInactiveUsers())
-    ->daily()
-    ->at('12:00')      // ⏰ DAILY AT 12:00 PM (NOON)
+    ->everyFiveMinutes()
     ->withoutOverlapping()
-    ->description('Mark all active users as absent at noon - remove upon login');
+    ->description('Mark all active users as absent once daily after noon - remove upon login');
 
 // Legacy command (optional - can remove later)
 Schedule::command('users:flag-inactive --days=15')

@@ -59,7 +59,7 @@ class ProjectOrderService
             $table->string('address', 255)->nullable();
             $table->string('client_name', 255)->nullable();
 
-            $table->enum('current_layer', ['drawer', 'checker', 'filler', 'qa', 'designer'])->default('drawer');
+            $table->enum('current_layer', ['drawer', 'checker', 'qa', 'designer'])->default('drawer');
             $table->enum('status', ['pending', 'in-progress', 'completed', 'on-hold', 'cancelled'])->default('pending');
             $table->string('workflow_state', 30)->default('RECEIVED');
             $table->string('workflow_type', 20)->default('FP_3_LAYER');

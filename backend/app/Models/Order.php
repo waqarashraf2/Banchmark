@@ -36,13 +36,13 @@ class Order extends Model
 
     protected $fillable = [
         'order_number', 'project_id', 'batch_number', 'client_reference',
-        'address', 'client_name',
+        'address', 'client_name', 'client_portal_id',
         'current_layer', 'status', 'workflow_state', 'workflow_type',
         'assigned_to', 'qa_supervisor_id', 'team_id', 'priority',
         'complexity_weight', 'estimated_minutes', 'order_type',
         'received_at', 'started_at', 'completed_at', 'delivered_at', 'due_date',
         'year', 'month', 'date', 'ausDatein',
-        'code', 'plan_type', 'instruction', 'project_type', 'bedrooms', 'VARIANT_no', 'due_in',
+        'code', 'plan_type', 'instruction', 'bedrooms', 'project_type', 'due_in',
         'metadata', 'import_source', 'import_log_id',
         'recheck_count', 'rejected_by', 'rejected_at',
         'rejection_reason', 'rejection_type', 'checker_self_corrected',

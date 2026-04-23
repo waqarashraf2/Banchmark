@@ -32,7 +32,7 @@ class ChecklistController extends Controller
     public function createTemplate(Request $request, int $projectId)
     {
         $validated = $request->validate([
-            'layer' => 'required|in:drawer,checker,filler,qa,designer',
+            'layer' => 'required|in:drawer,checker,qa,designer',
             'title' => 'required|string|max:255',
             'description' => 'nullable|string',
             'sort_order' => 'nullable|integer',

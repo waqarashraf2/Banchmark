@@ -19,8 +19,8 @@ class MetroExecutiveImportService
     protected string $url = 'https://es-portal.captur3d.io/external_supplier/trueplan_orders?filter=pending';
     protected string $username = 'order@benchmarkstudio.biz';
     protected string $password = 'OgLilaA@yqE1&Rfc';
-    protected int $projectId = 13;
-    protected string $table = 'project_13_orders';
+    protected int $projectId = 6;
+    protected string $table = 'project_6_orders';
 
     /**
      * Fetch variant number from JSON API

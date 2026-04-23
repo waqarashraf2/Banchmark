@@ -230,7 +230,10 @@ Route::prefix('assignments')->group(function () {
         Route::get('/projects/{projectId}/import-history', [OrderImportController::class, 'importHistory']);
         Route::get('/import-logs/{importLogId}', [OrderImportController::class, 'importDetails']);
         Route::post('/projects/{project}/import-csv-text', [OrderImportController::class, 'importCsvText']);
-                Route::get('/projects/{projectId}/csv-headers', [OrderImportController::class, 'getProjectCsvHeaders']);
+        Route::get('/projects/{projectId}/imported-orders', [OrderImportController::class, 'importedOrders']);
+        Route::put('/projects/{projectId}/imported-orders/{orderId}', [OrderImportController::class, 'updateImportedOrder']);
+        Route::delete('/projects/{projectId}/imported-orders/{orderId}', [OrderImportController::class, 'deleteImportedOrder']);
+        Route::get('/projects/{projectId}/csv-headers', [OrderImportController::class, 'getProjectCsvHeaders']);
         Route::post('/projects/{projectId}/csv-headers', [OrderImportController::class, 'saveProjectCsvHeaders']);
         Route::put('/projects/{projectId}/csv-headers', [OrderImportController::class, 'saveProjectCsvHeaders']);
         Route::delete('/projects/{projectId}/csv-headers', [OrderImportController::class, 'deleteProjectCsvHeaders']);

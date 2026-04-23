@@ -217,83 +217,61 @@ class LiveQAController extends Controller
     // ─── Order Checklist (Live QA Review) ──────────────────────────────
 
     /**
-     * GET /api/live-qa/review/{projectId}/{orderNumber}/{layer}
+     * GET /api/live-qa/review/{projectId}
      *
-     * Get checklist items with current review status for an order.
-     * Returns all product_checklist items + any existing review data.
+     * Get all checklist items for a project based on client name.
+     * Frontend will handle order/layer specific logic.
      */
-    public function getReview(Request $request, int $projectId, string $orderNumber, string $layer)
+    public function getReview(Request $request, int $projectId)
     {
-        $mistakeTable = ProjectOrderService::getMistakeTableName($projectId, $layer);
+        // Get project to find client name
+        $project = DB::table('projects')->where('id', $projectId)->first();
+        if (!$project) {
+            return response()->json(['error' => 'Project not found'], 404);
+        }
 
-        // Ensure table exists
-        if (!Schema::hasTable($mistakeTable)) {
+        $clientName = $project->name; // Assuming project name is the client name
+
+        // Ensure mistake tables exist
+        if (!ProjectOrderService::mistakeTablesExist($projectId)) {
             ProjectOrderService::createMistakeTablesForProject($projectId);
         }
 
-        // Get all active checklist items
+        // Fetch all checklists for this client
         $checklistItems = DB::table('product_checklists')
             ->where('is_active', true)
+            ->where('client', $clientName)
             ->orderBy('sort_order')
             ->orderBy('id')
             ->get();
 
-        // Get existing review data for this order
-        $existingReviews = DB::table($mistakeTable)
-            ->where('order_id', $orderNumber)
-            ->get()
-            ->keyBy('product_checklist_id');
-
-        // Get order details
-        $orderTable = ProjectOrderService::getTableName($projectId);
-        $order = DB::table($orderTable)->where('order_number', $orderNumber)->first();
-
-        // Determine the worker being checked
-        $workerName = match ($layer) {
-            'drawer' => $order->drawer_name ?? '',
-            'checker' => $order->checker_name ?? '',
-            'qa' => $order->qa_name ?? '',
-            default => '',
-        };
-
-        // Merge checklist items with review data
-        $items = $checklistItems->map(function ($item) use ($existingReviews) {
-            $review = $existingReviews->get($item->id);
-            return [
-                'product_checklist_id' => $item->id,
-                'title' => $item->title,
-                'client' => $item->client,
-                'product' => $item->product,
-                'is_checked' => $review ? (bool) $review->is_checked : false,
-                'count_value' => $review ? $review->count_value : 0,
-                'text_value' => $review ? $review->text_value : '',
-                'review_id' => $review ? $review->id : null,
-                'created_by' => $review ? $review->created_by : null,
-                'updated_at' => $review ? $review->updated_at : null,
-            ];
-        });
-
         return response()->json([
             'success' => true,
-            'order_number' => $orderNumber,
-            'layer' => $layer,
-            'worker_name' => $workerName,
-            'order' => $order ? [
-                'id' => $order->id,
-                'order_number' => $order->order_number,
-                'address' => $order->address ?? '',
-                'drawer_name' => $order->drawer_name ?? '',
-                'checker_name' => $order->checker_name ?? '',
-                'qa_name' => $order->qa_name ?? '',
-                'drawer_done' => $order->drawer_done ?? '',
-                'checker_done' => $order->checker_done ?? '',
-                'final_upload' => $order->final_upload ?? '',
-            ] : null,
-            'items' => $items,
+            'project_id' => $projectId,
+            'client' => $clientName,
+            'items' => $checklistItems->map(function ($item) {
+                return [
+                    'product_checklist_id' => $item->id,
+                    'title' => $item->title,
+                    'client' => $item->client,
+                    'product' => $item->product,
+                    'check_list_type_id' => $item->check_list_type_id,
+                    'is_checked' => false, // Default state
+                    'count_value' => 0,     // Default state
+                    'text_value' => '',     // Default state
+                    'review_id' => null,
+                    'created_by' => null,
+                    'updated_at' => null,
+                ];
+            }),
             'total_items' => $checklistItems->count(),
-            'reviewed_items' => $existingReviews->count(),
         ]);
     }
+
+
+    
+    
+    
 
     /**
      * POST /api/live-qa/review/{projectId}/{orderNumber}/{layer}
@@ -397,6 +375,14 @@ class LiveQAController extends Controller
      */
     public function getOverview(Request $request, int $projectId)
     {
+        $perPage = $request->input('per_page', 50);
+$search = $request->input('search');
+$filter = $request->input('filter', 'all');
+$dateStr = $request->input('date');
+
+// ✅ ADD THESE HERE (important)
+$fromDateTime = $request->input('from_datetime');
+$toDateTime   = $request->input('to_datetime');
         $table = ProjectOrderService::getTableName($projectId);
         if (!Schema::hasTable($table)) {
             return response()->json(['error' => 'Project table not found'], 404);
@@ -436,9 +422,20 @@ class LiveQAController extends Controller
         // Date filter — no default date restriction so Live QA sees all
         // orders needing review regardless of when they were created.
         // Users can manually pick a date to narrow down.
-        if ($dateStr && $dateStr !== 'all') {
-            $query->whereDate('created_at', $dateStr);
-        }
+// Default to today if no date provided
+// Priority 1: datetime range filter (received_at)
+if ($fromDateTime && $toDateTime) {
+    $query->whereBetween('received_at', [$fromDateTime, $toDateTime]);
+}
+// Priority 2: single date filter (fallback, still using received_at)
+elseif (!$dateStr || $dateStr === 'today') {
+    $query->whereDate('received_at', now()->toDateString());
+}
+elseif ($dateStr !== 'all') {
+    $query->whereDate('received_at', $dateStr);
+}
+// if date = 'all' → no filter
+
         // If no date specified → show all orders (no date filter)
 
         // Status filter
@@ -527,9 +524,16 @@ class LiveQAController extends Controller
             ->where('drawer_name', '!=', '')
             ->whereNotNull('drawer_name');
 
-        if ($dateStr && $dateStr !== 'all') {
-            $countQuery->whereDate('created_at', $dateStr);
-        }
+if ($fromDateTime && $toDateTime) {
+    $countQuery->whereBetween('received_at', [$fromDateTime, $toDateTime]);
+}
+elseif (!$dateStr || $dateStr === 'today') {
+    $countQuery->whereDate('received_at', now()->toDateString());
+}
+elseif ($dateStr !== 'all') {
+    $countQuery->whereDate('received_at', $dateStr);
+}
+// if date = 'all' → no filter
         // If no date specified → count all orders (matches main query)
 
         $todayTotal = (clone $countQuery)->count();

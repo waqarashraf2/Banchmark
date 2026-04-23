@@ -121,6 +121,138 @@ class OrderImportController extends Controller
         ]);
     }
 
+
+
+    /**
+     * List imported orders for a project with pagination.
+     */
+    public function importedOrders(Request $request, int $projectId)
+    {
+        Project::findOrFail($projectId);
+
+        $perPage = min(max((int) $request->query('per_page', 50), 1), 100);
+        $search = trim((string) $request->query('search', ''));
+
+        $query = Order::forProject($projectId)
+            ->whereNotNull('import_source')
+            ->select([
+                'id',
+                'order_number',
+                'address',
+                'client_name',
+                'import_source',
+                'import_log_id',
+                'created_at',
+                'updated_at',
+            ])
+            ->orderByDesc('id');
+
+        if ($search !== '') {
+            $query->where(function ($q) use ($search) {
+                $q->where('order_number', 'like', "%{$search}%")
+                    ->orWhere('address', 'like', "%{$search}%")
+                    ->orWhere('client_name', 'like', "%{$search}%");
+            });
+        }
+
+        $orders = $query->paginate($perPage);
+
+        $orders->getCollection()->transform(function ($order) {
+            return [
+                'order_id' => $order->id,
+                'order_number' => $order->order_number,
+                'address' => $order->address,
+                'client_name' => $order->client_name,
+                'import_source' => $order->import_source,
+                'import_log_id' => $order->import_log_id,
+                'created_at' => $order->created_at,
+                'updated_at' => $order->updated_at,
+            ];
+        });
+
+        return response()->json([
+            'success' => true,
+            'project_id' => $projectId,
+            'data' => $orders->items(),
+            'pagination' => [
+                'total' => $orders->total(),
+                'per_page' => $orders->perPage(),
+                'current_page' => $orders->currentPage(),
+                'last_page' => $orders->lastPage(),
+            ],
+        ]);
+    }
+
+    /**
+     * Update an imported order safely.
+     */
+    public function updateImportedOrder(Request $request, int $projectId, int $orderId)
+    {
+        Project::findOrFail($projectId);
+
+        $order = Order::findInProject($projectId, $orderId);
+        abort_unless($order, 404, 'Order not found');
+
+        $validated = $request->validate([
+            'order_number' => 'sometimes|string|max:255',
+            'address' => 'nullable|string|max:255',
+            'client_name' => 'nullable|string|max:255',
+        ]);
+
+        if (array_key_exists('order_number', $validated)) {
+            $exists = Order::forProject($projectId)
+                ->where('order_number', $validated['order_number'])
+                ->where('id', '!=', $orderId)
+                ->exists();
+
+            if ($exists) {
+                return response()->json([
+                    'message' => 'Order number already exists for this project.',
+                    'errors' => [
+                        'order_number' => ['The order number has already been taken.'],
+                    ],
+                ], 422);
+            }
+        }
+
+        $order->update($validated);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Imported order updated successfully.',
+            'data' => [
+                'order_id' => $order->id,
+                'order_number' => $order->order_number,
+                'address' => $order->address,
+                'client_name' => $order->client_name,
+                'import_source' => $order->import_source,
+                'import_log_id' => $order->import_log_id,
+                'created_at' => $order->created_at,
+                'updated_at' => $order->updated_at,
+            ],
+        ]);
+    }
+
+    /**
+     * Delete an imported order safely.
+     */
+    public function deleteImportedOrder(Request $request, int $projectId, int $orderId)
+    {
+        Project::findOrFail($projectId);
+
+        $order = Order::findInProject($projectId, $orderId);
+        abort_unless($order, 404, 'Order not found');
+
+        $order->delete();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Imported order deleted successfully.',
+            'order_id' => $orderId,
+        ]);
+    }
+
+
     
     
     /**
@@ -187,6 +319,7 @@ class OrderImportController extends Controller
     /**
      * Import orders from CSV file.
      */
+     
     public function importCsv(Request $request, int $projectId)
     {
         $request->validate([
@@ -425,6 +558,7 @@ class OrderImportController extends Controller
 
 
 
+
 private function processCsvString(string $csvText, Project $project, OrderImportLog $importLog): array
 {
     $importLog->markStarted();
@@ -597,18 +731,35 @@ private function processCsvString(string $csvText, Project $project, OrderImport
             */
             if (!empty($data['due_in'])) {
 
-                preg_match('/(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?/', strtolower($data['due_in']), $m);
+                $dueInRaw = trim((string) $data['due_in']);
+
+                preg_match('/^\s*(?:(\d+)\s*h(?:ours?)?)?\s*(?:(\d+)\s*m(?:in(?:utes?)?)?)?\s*$/i', $dueInRaw, $m);
 
                 $hours = isset($m[1]) ? (int) $m[1] : 0;
                 $minutes = isset($m[2]) ? (int) $m[2] : 0;
 
-                if ($hours === 0 && $minutes === 0) {
-                    throw new \Exception('Invalid due_in format');
-                }
+                if ($hours > 0 || $minutes > 0) {
+                    $dueAt = $receivedAt->copy()
+                        ->addHours($hours)
+                        ->addMinutes($minutes);
+                } else {
+                    $looksLikeAbsoluteDateTime =
+                        preg_match('/[\/\-]/', $dueInRaw)
+                        && (
+                            preg_match('/\d{1,2}:\d{2}/', $dueInRaw)
+                            || preg_match('/\b(am|pm)\b/i', $dueInRaw)
+                        );
 
-                $dueAt = $receivedAt->copy()
-                    ->addHours($hours)
-                    ->addMinutes($minutes);
+                    if (!$looksLikeAbsoluteDateTime) {
+                        throw new \Exception('Invalid due_in format');
+                    }
+
+                    try {
+                        $dueAt = \Carbon\Carbon::parse($dueInRaw);
+                    } catch (\Throwable $e) {
+                        throw new \Exception('Invalid due_in format');
+                    }
+                }
 
             } else {
 
@@ -650,6 +801,10 @@ private function processCsvString(string $csvText, Project $project, OrderImport
                 'import_log_id' => $importLog->id,
             ];
 
+            if (in_array('client_portal_id', $columns, true)) {
+                $orderData['client_portal_id'] = null;
+            }
+
             if ($project->id === 16 && in_array('date', $columns, true)) {
                 $orderDate = $receivedAt->copy();
 
@@ -667,6 +822,7 @@ private function processCsvString(string $csvText, Project $project, OrderImport
             */
             $csvToDbMap = [
 
+                'client_portal_id' => 'client_portal_id',
                 'client_name' => 'client_name',
                 'address'     => 'address',
                 'plan_type'   => 'plan_type',
