@@ -50,31 +50,37 @@ Schedule::job(new ResetDailyCounters())
     ->withoutOverlapping()
     ->description('Reset today_completed counters for all users');
 
-// Per CEO Requirements: Mark all users absent at noon (12 PM)
+// Per CEO Requirements: Flag inactive users (daily at midnight)
 // Users remove absent mark by logging in
 Schedule::job(new UpdateInactiveUsers())
     ->everyFiveMinutes()
     ->withoutOverlapping()
     ->description('Mark all active users as absent once daily after noon - remove upon login');
 
-// Legacy command (optional - can remove later)
+
+// Legacy command support
 Schedule::command('users:flag-inactive --days=15')
     ->daily()
-    ->at('12:00')      // ⏰ SAME TIME
-    ->description('Legacy: Flag inactive users');
+    ->at('00:05')
+    ->description('Legacy: Flag inactive users and reassign their orders');
 
 Schedule::command('app:romio-import')
     ->everyFiveMinutes()
     ->withoutOverlapping()
     ->runInBackground();
     
-Schedule::command('app:metro-import')
+    Schedule::command('app:metro-import')
     ->everyFiveMinutes()
     ->withoutOverlapping()
     ->runInBackground();
-
-// LOW LOAD SYSTEM (IMPORTANT)
+    
+    // LOW LOAD SYSTEM (IMPORTANT)
 Schedule::command('app:safp-import')
+    ->everyTenMinutes()
+    ->withoutOverlapping()
+    ->runInBackground();
+
+Schedule::command('app:saphoto-import')
     ->everyTenMinutes()
     ->withoutOverlapping()
     ->runInBackground();

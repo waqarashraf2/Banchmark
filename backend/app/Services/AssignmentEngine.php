@@ -560,6 +560,16 @@ class AssignmentEngine
                 if (in_array($state, ['SUBMITTED_DRAW', 'QUEUED_CHECK'])) {
                     $updates['drawer_done'] = 'yes';
                     $updates['drawer_date'] = now()->toDateTimeString();
+                } elseif (
+                    $role === 'checker'
+                    && Project::checkerCompletesOrder((int) $order->project_id)
+                    && in_array($state, ['DELIVERED', 'SUBMITTED_CHECK'], true)
+                ) {
+                    $timestamp = now()->toDateTimeString();
+                    $updates['checker_done'] = 'yes';
+                    $updates['checker_date'] = $timestamp;
+                    $updates['final_upload'] = 'yes';
+                    $updates['ausFinaldate'] = $timestamp;
                 } elseif (in_array($state, ['SUBMITTED_CHECK', 'QUEUED_QA', 'QUEUED_FILLER'])) {
                     $updates['checker_done'] = 'yes';
                     $updates['checker_date'] = now()->toDateTimeString();

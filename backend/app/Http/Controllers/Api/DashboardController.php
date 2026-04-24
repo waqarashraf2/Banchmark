@@ -1152,6 +1152,7 @@ if ($request->query('date')) {
     
     
     
+    
     /**
      * GET /dashboard/project-stats
      * Project stats based on selected date.
@@ -1164,7 +1165,7 @@ if ($request->query('date')) {
         $endDate = $request->query('end_date', $request->input('end_date'));
         $selectedProjectId = $request->query('project_id');
         $selectedRole = strtolower(trim((string) $request->query('role', $request->input('role', ''))));
-        $selectedRole = in_array($selectedRole, ['drawer', 'checker', 'qa', 'filler'], true) ? $selectedRole : null;
+        $selectedRole = in_array($selectedRole, ['drawer', 'designer', 'checker', 'qa', 'filler'], true) ? $selectedRole : null;
 
         if ($startDate) {
             $startDate = \Carbon\Carbon::parse($startDate)->toDateString();
@@ -1208,8 +1209,27 @@ if ($request->query('date')) {
             );
         };
 
+        $applyProject16DeliveredRange = function ($query, string $column) use ($startDate, $endDate) {
+            $rangeStart = \Carbon\Carbon::parse($startDate)->subDay()->setTime(22, 0, 0);
+            $rangeEnd = \Carbon\Carbon::parse($endDate)->setTime(22, 0, 0);
+
+            $query->where($column, '>=', $rangeStart->toDateTimeString())
+                ->where($column, '<', $rangeEnd->toDateTimeString());
+        };
+
         $projects = Project::where('status', 'active')->get();
         $projectIds = $projects->pluck('id')->toArray();
+
+        if ($selectedProjectId) {
+            $selectedProject = $projects->firstWhere('id', (int) $selectedProjectId);
+            $selectedWorkflowType = $selectedProject?->workflow_type ?? 'FP_3_LAYER';
+
+            if ($selectedWorkflowType === 'PH_2_LAYER' && $selectedRole === 'drawer') {
+                $selectedRole = 'designer';
+            } elseif ($selectedWorkflowType !== 'PH_2_LAYER' && $selectedRole === 'designer') {
+                $selectedRole = 'drawer';
+            }
+        }
 
         // Separate project 16 from others
         $otherProjectIds = array_filter($projectIds, fn($id) => $id != 16);
@@ -1298,10 +1318,10 @@ $userCounts = User::whereIn('project_id', $projectIds)
         }
         if ($hasProject16) {
             $table16 = \App\Services\ProjectOrderService::getTableName(16);
-            if (self::tableExists($table16) && self::columnExists($table16, 'date')) {
-                $project16Done = Order::queryAcrossProjects([16], function ($q, $pid) use ($applyProject16DateRange) {
+            if (self::tableExists($table16) && self::columnExists($table16, 'delivered_at')) {
+                $project16Done = Order::queryAcrossProjects([16], function ($q, $pid) use ($applyProject16DeliveredRange) {
                     $q->where('workflow_state', 'DELIVERED');
-                    $applyProject16DateRange($q, 'date');
+                    $applyProject16DeliveredRange($q, 'delivered_at');
                     $q
                         ->selectRaw('? as project_id, COUNT(*) as cnt', [$pid])
                         ->groupBy('project_id');
@@ -1451,6 +1471,15 @@ $userCounts = User::whereIn('project_id', $projectIds)
         ]);
     };
 
+    $applyProject16DeliveredRange = function ($query, string $column) use ($startDate, $endDate) {
+        $rangeStart = \Carbon\Carbon::parse($startDate)->subDay()->setTime(22, 0, 0);
+        $rangeEnd = \Carbon\Carbon::parse($endDate)->setTime(22, 0, 0);
+
+        $query->where($column, '>=', $rangeStart->toDateTimeString())
+            ->where($column, '<', $rangeEnd->toDateTimeString());
+    };
+
+    
     if (!$project) {
         return [
             'project_id' => $projectId,
@@ -1483,8 +1512,23 @@ $userCounts = User::whereIn('project_id', $projectIds)
         ];
     }
 
+    $workflowType = $project->workflow_type ?? 'FP_3_LAYER';
+    $isFloorPlan = $workflowType === 'FP_3_LAYER';
+
+    if ($isFloorPlan && $selectedRole === 'designer') {
+        $selectedRole = 'drawer';
+    } elseif (!$isFloorPlan && $selectedRole === 'drawer') {
+        $selectedRole = 'designer';
+    }
+
     $roles = [
         'drawer' => [
+            'id_col' => 'drawer_id',
+            'name_col' => 'drawer_name',
+            'done_col' => 'drawer_done',
+            'done_date_col' => 'drawer_date',
+        ],
+        'designer' => [
             'id_col' => 'drawer_id',
             'name_col' => 'drawer_name',
             'done_col' => 'drawer_done',
@@ -1509,6 +1553,28 @@ $userCounts = User::whereIn('project_id', $projectIds)
             'done_date_col' => 'file_upload_date',
         ],
     ];
+
+    $projectRoleOverrides = [
+        12 => [
+            'filler' => [
+                'done_col' => 'file_uploaded',
+                'done_date_col' => 'file_upload_date',
+            ],
+        ],
+    ];
+
+    $alwaysIncludeRolesByProject = [
+        12 => ['filler'],
+    ];
+
+    $baseRoleKeys = $isFloorPlan ? ['drawer', 'checker', 'qa'] : ['designer', 'qa'];
+    $projectExtraRolesById = [
+        12 => ['filler'],
+    ];
+    $roleKeys = array_values(array_unique(array_merge(
+        $baseRoleKeys,
+        $projectExtraRolesById[(int) $projectId] ?? []
+    )));
 
     $roleBreakdown = [];
 
@@ -1564,9 +1630,19 @@ $userCounts = User::whereIn('project_id', $projectIds)
         return false;
     };
 
-    foreach ($roles as $roleKey => $config) {
+    foreach ($roleKeys as $roleKey) {
+        $config = $roles[$roleKey] ?? null;
+        if ($config === null) {
+            continue;
+        }
+
         if ($selectedRole !== null && $selectedRole !== $roleKey) {
             continue;
+        }
+
+        $roleOverride = $projectRoleOverrides[(int) $projectId][$roleKey] ?? null;
+        if ($roleOverride !== null) {
+            $config = array_merge($config, $roleOverride);
         }
 
         // Skip if required columns missing
@@ -1579,8 +1655,9 @@ $userCounts = User::whereIn('project_id', $projectIds)
 
         /* =====================================================
            1. ALL DONE TODAY
-           Keep this on the same project-stats cohort to avoid
-           mismatches across drawer/checker/qa counts.
+           QA stays on delivered_at.
+           Other roles use their own done date columns.
+           Project 16 keeps its 10 PM -> 10 PM delivery window.
         ===================================================== */
 
         $queryDoneToday = DB::table($table)
@@ -1588,7 +1665,21 @@ $userCounts = User::whereIn('project_id', $projectIds)
             ->whereNotNull($config['name_col'])
             ->where($config['name_col'], '!=', '');
 
-        if (!$applyRoleDoneRange($queryDoneToday, $config['done_date_col'])) {
+        if ((int) $projectId === 12 && $roleKey === 'filler') {
+            if (!self::columnExists($table, $config['done_date_col'])) {
+                continue;
+            }
+
+            $applyTimestampRange($queryDoneToday, $config['done_date_col']);
+        } elseif ($roleKey === 'qa') {
+            if ((int) $projectId === 16 && self::columnExists($table, 'delivered_at')) {
+                $applyProject16DeliveredRange($queryDoneToday, 'delivered_at');
+            } elseif (self::columnExists($table, 'delivered_at')) {
+                $applyTimestampRange($queryDoneToday, 'delivered_at');
+            } elseif (!$applyRoleDoneRange($queryDoneToday, $config['done_date_col'])) {
+                continue;
+            }
+        } elseif (!$applyRoleDoneRange($queryDoneToday, $config['done_date_col'])) {
             continue;
         }
 
@@ -1632,7 +1723,8 @@ $userCounts = User::whereIn('project_id', $projectIds)
 
 
         // Skip filler if empty (your existing behavior)
-        if ($roleKey === 'filler' && $doneTodayAll->isEmpty() && $receivedTodayDone->isEmpty()) {
+        $alwaysIncludeRoles = $alwaysIncludeRolesByProject[(int) $projectId] ?? [];
+        if (!in_array($roleKey, $alwaysIncludeRoles, true) && $roleKey === 'filler' && $doneTodayAll->isEmpty() && $receivedTodayDone->isEmpty()) {
             continue;
         }
 
@@ -1667,6 +1759,7 @@ $userCounts = User::whereIn('project_id', $projectIds)
         'roles' => $roleBreakdown,
     ];
 }
+
 
 
 
@@ -2338,6 +2431,12 @@ $userCounts = User::whereIn('project_id', $projectIds)
     $viewMode = $request->get('view_mode', 'stage');
     $noCache = $request->get('no_cache', false) === 'true' || $request->get('no_cache') === true;
 
+    $dailyOperationsProjectConfig = [
+        12 => [
+            'extra_stages' => ['FILLER'],
+        ],
+    ];
+
     // Scope projects for OM
     $scopedProjectIds = null;
     if ($user->role === 'operations_manager') {
@@ -2346,7 +2445,10 @@ $userCounts = User::whereIn('project_id', $projectIds)
 
     // ✅ Normalized cache key (important)
     // Version hash includes the report configuration to auto-invalidate when projects are changed
-    $reportConfigHash = md5(json_encode(['received_at_projects' => [15, 16]]));
+    $reportConfigHash = md5(json_encode([
+        'received_at_projects' => [15, 16],
+        'project_config' => $dailyOperationsProjectConfig,
+    ]));
     $cacheKey = "daily_operations_"
         . $fromDate->format('Y-m-d') . "_"
         . $toDate->format('Y-m-d') . "_{$viewMode}_v{$reportConfigHash}"
@@ -2415,6 +2517,12 @@ $userCounts = User::whereIn('project_id', $projectIds)
         // Projects that should be counted from the orders table by received_at only.
         $receivedAtProjects = [15, 16];
 
+        $dailyOperationsProjectConfig = [
+            12 => [
+                'extra_stages' => ['FILLER'],
+            ],
+        ];
+
         // Get active projects (scoped for OM, all for CEO/Director)
         $query = Project::where('status', 'active')
             ->orderBy('country')
@@ -2436,6 +2544,7 @@ $userCounts = User::whereIn('project_id', $projectIds)
             'DRAW'   => ['date_col' => 'drawer_date',   'id_col' => 'drawer_id',  'name_col' => 'drawer_name',  'tz_offset' => 0],
             'CHECK'  => ['date_col' => 'checker_date',  'id_col' => 'checker_id', 'name_col' => 'checker_name', 'tz_offset' => 0],
             'QA'     => ['date_col' => 'ausFinaldate',  'id_col' => 'qa_id',      'name_col' => 'qa_name',      'tz_offset' => -6],
+            'FILLER' => ['date_col' => 'file_upload_date', 'id_col' => 'file_uploader_id', 'name_col' => 'file_uploader_name', 'tz_offset' => 0],
             'DESIGN' => ['date_col' => 'drawer_date',   'id_col' => 'drawer_id',  'name_col' => 'drawer_name',  'tz_offset' => 0],
         ];
 
@@ -2495,7 +2604,10 @@ $userCounts = User::whereIn('project_id', $projectIds)
             // ─── LAYER WORK (DRAW / CHECK / QA) ─────────────────────────────
             // Count layer output from order-table done flags using the received_at cohort only.
             // This avoids mismatches from ausFinaldate/delivered_at/date-column differences.
+            $projectDailyConfig = $dailyOperationsProjectConfig[(int) $project->id] ?? [];
+            $extraStages = $projectDailyConfig['extra_stages'] ?? [];
             $stages = $isFloorPlan ? ['DRAW', 'CHECK', 'QA'] : ['DESIGN', 'QA'];
+            $stages = array_values(array_unique(array_merge($stages, $extraStages)));
             $layerWork = [];
 
             foreach ($stages as $stage) {
@@ -2509,6 +2621,7 @@ $userCounts = User::whereIn('project_id', $projectIds)
                     'DRAW', 'DESIGN' => 'drawer_done',
                     'CHECK' => 'checker_done',
                     'QA' => 'final_upload',
+                    'FILLER' => 'file_uploaded',
                     default => null,
                 };
 
@@ -3523,6 +3636,8 @@ if ($statusFilter === 'pending_by_drawer') {
         ]);
     }
 
+ 
+ 
  
 
     /**

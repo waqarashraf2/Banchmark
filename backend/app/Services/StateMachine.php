@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\Order;
+use App\Models\Project;
 use App\Models\WorkItem;
 use InvalidArgumentException;
 
@@ -89,6 +90,15 @@ class StateMachine
      */
     public static function canTransition(Order $order, string $toState): bool
     {
+        if (
+            $order->workflow_type !== 'PH_2_LAYER'
+            && $order->workflow_state === 'SUBMITTED_CHECK'
+            && $toState === 'DELIVERED'
+            && Project::checkerCompletesOrder((int) $order->project_id)
+        ) {
+            return true;
+        }
+
         $transitions = $order->workflow_type === 'PH_2_LAYER'
             ? self::PH_TRANSITIONS
             : self::FP_TRANSITIONS;
@@ -195,7 +205,9 @@ class StateMachine
             ? ['SUBMITTED_DESIGN' => 'QUEUED_QA', 'APPROVED_QA' => 'DELIVERED']
             : [
                 'SUBMITTED_DRAW' => 'QUEUED_CHECK',
-                'SUBMITTED_CHECK' => $projectId === 12 ? 'QUEUED_FILLER' : 'QUEUED_QA',
+                'SUBMITTED_CHECK' => $projectId === 12
+                    ? 'QUEUED_FILLER'
+                    : (Project::checkerCompletesOrder($projectId) ? 'DELIVERED' : 'QUEUED_QA'),
                 'SUBMITTED_FILLER' => 'QUEUED_QA',
                 'APPROVED_QA' => 'DELIVERED',
             ];

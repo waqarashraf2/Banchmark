@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Models\Project;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -328,6 +329,7 @@ class SyncMetroOrders extends Command
      */
     private function deriveWorkflowState(object $old): array
     {
+        $projectId = isset($old->project_id) ? (int) $old->project_id : self::TARGET_PROJECT_ID;
         $drawerDone = trim($old->drawer_done ?? '');
         $checkerDone = trim($old->checker_done ?? '');
         $finalUpload = trim($old->final_upload ?? '');
@@ -338,6 +340,9 @@ class SyncMetroOrders extends Command
 
         if ($drawerDone === 'yes' && $checkerDone === 'yes' && $finalUpload === 'yes') {
             return ['status' => 'completed', 'workflow_state' => 'DELIVERED', 'current_layer' => 'qa'];
+        }
+        if ($drawerDone === 'yes' && $checkerDone === 'yes' && Project::checkerCompletesOrder($projectId)) {
+            return ['status' => 'completed', 'workflow_state' => 'DELIVERED', 'current_layer' => 'checker'];
         }
         if ($drawerDone === 'yes' && $checkerDone === 'yes') {
             return ['status' => 'pending', 'workflow_state' => 'QUEUED_QA', 'current_layer' => 'qa'];

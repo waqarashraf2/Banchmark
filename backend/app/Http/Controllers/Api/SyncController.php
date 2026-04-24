@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\Project;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -349,6 +350,7 @@ class SyncController extends Controller
      */
     private function deriveWorkflowState(array $data): array
     {
+        $projectId = isset($data['project_id']) ? (int) $data['project_id'] : self::PROJECT_ID;
         $drawerDone = trim($data['drawer_done'] ?? '');
         $checkerDone = trim($data['checker_done'] ?? '');
         $finalUpload = trim($data['final_upload'] ?? '');
@@ -360,6 +362,10 @@ class SyncController extends Controller
         // Fully delivered
         if ($drawerDone === 'yes' && $checkerDone === 'yes' && $finalUpload === 'yes') {
             return ['status' => 'completed', 'workflow_state' => 'DELIVERED', 'current_layer' => 'qa'];
+        }
+
+        if ($drawerDone === 'yes' && $checkerDone === 'yes' && Project::checkerCompletesOrder($projectId)) {
+            return ['status' => 'completed', 'workflow_state' => 'DELIVERED', 'current_layer' => 'checker'];
         }
 
         // Checker done, awaiting QA

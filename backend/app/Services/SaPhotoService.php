@@ -10,13 +10,13 @@ use DateTime;
 use DateTimeZone;
 use Exception;
 
-class SaFPImportService
+class SaPhotoService
 {
-    protected string $apiUrl = 'https://diary-booking-assistant-4f2ee1a4.base44.app/api/functions/processorTasksJson?api_key=PzpZrmL5vmAnEpNpWx5LBQJMRHqodPyR&processor_id=11441';
+    protected string $apiUrl = 'https://diary-booking-assistant-4f2ee1a4.base44.app/api/functions/processorTasksJson?api_key=PzpZrmL5vmAnEpNpWx5LBQJMRHqodPyR&processor_id=6284';
     protected string $apiKey = 'YOUR_API_KEY';
-    protected int $processorId = 11441;
-    protected int $projectId = 12;
-    protected string $table = 'project_12_orders';
+    protected int $processorId = 6284;
+    protected int $projectId = 19;
+    protected string $table = 'project_19_orders';
 
     protected function mapStatus(string $status): string
     {
@@ -34,7 +34,7 @@ class SaFPImportService
             $response = Http::timeout(60)->get($this->apiUrl);
 
             if (!$response->successful()) {
-                Log::error('Project12 API failed');
+                Log::error('Project19 Photo API failed');
                 return;
             }
 
@@ -54,8 +54,8 @@ class SaFPImportService
 
             foreach ($data['tasks'] as $task) {
 
-                // ONLY FLOORPLAN - only process tasks with product_category_id = 2 and product_id = 3
-                if (!isset($task['product_category_id']) || $task['product_category_id'] != 2 || !isset($task['product_id']) || $task['product_id'] != 3) {
+                // ONLY PHOTO CATEGORY - process tasks from product_category_id = 3 only
+                if (!isset($task['product_category_id']) || (int) $task['product_category_id'] !== 3) {
                     continue;
                 }
 
@@ -139,7 +139,7 @@ class SaFPImportService
                         }
                     } catch (Exception $rowException) {
                         $skipped++;
-                        Log::warning('Project12 Import Row Skipped', [
+                        Log::warning('Project19 Photo Import Row Skipped', [
                             'order_number' => $record['order_number'] ?? null,
                             'client_portal_id' => $record['client_portal_id'] ?? null,
                             'message' => $rowException->getMessage(),
@@ -147,7 +147,7 @@ class SaFPImportService
                     }
                 }
 
-                Log::info('Project12 Import Completed', [
+                Log::info('Project19 Photo Import Completed', [
                     'fetched' => count($records),
                     'inserted' => $inserted,
                     'skipped' => $skipped,
@@ -155,11 +155,11 @@ class SaFPImportService
                 ]);
 
             } else {
-                Log::warning('Project12 Import: No valid records found');
+                Log::warning('Project19 Photo Import: No valid records found');
             }
 
         } catch (Exception $e) {
-            Log::error('Project12 Import Error: '.$e->getMessage());
+            Log::error('Project19 Photo Import Error: '.$e->getMessage());
         }
     }
 
