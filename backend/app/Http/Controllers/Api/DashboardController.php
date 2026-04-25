@@ -1513,6 +1513,19 @@ $userCounts = User::whereIn('project_id', $projectIds)
     }
 
     $workflowType = $project->workflow_type ?? 'FP_3_LAYER';
+    if (
+        empty($project->workflow_type)
+        && self::columnExists($table, 'workflow_type')
+    ) {
+        $tableWorkflowType = DB::table($table)
+            ->whereNotNull('workflow_type')
+            ->where('workflow_type', '!=', '')
+            ->value('workflow_type');
+
+        if (!empty($tableWorkflowType)) {
+            $workflowType = $tableWorkflowType;
+        }
+    }
     $isFloorPlan = $workflowType === 'FP_3_LAYER';
 
     if ($isFloorPlan && $selectedRole === 'designer') {
@@ -1661,9 +1674,24 @@ $userCounts = User::whereIn('project_id', $projectIds)
         ===================================================== */
 
         $queryDoneToday = DB::table($table)
-            ->where($config['done_col'], 'yes')
             ->whereNotNull($config['name_col'])
             ->where($config['name_col'], '!=', '');
+
+        if ($roleKey === 'designer') {
+            $queryDoneToday->where(function ($query) use ($config, $table) {
+                $query->where($config['done_col'], 'yes');
+
+                if (self::columnExists($table, 'final_upload')) {
+                    $query->orWhere('final_upload', 'yes');
+                }
+
+                if (self::columnExists($table, 'workflow_state')) {
+                    $query->orWhere('workflow_state', 'DELIVERED');
+                }
+            });
+        } else {
+            $queryDoneToday->where($config['done_col'], 'yes');
+        }
 
         if ((int) $projectId === 12 && $roleKey === 'filler') {
             if (!self::columnExists($table, $config['done_date_col'])) {
@@ -1679,6 +1707,12 @@ $userCounts = User::whereIn('project_id', $projectIds)
             } elseif (!$applyRoleDoneRange($queryDoneToday, $config['done_date_col'])) {
                 continue;
             }
+        } elseif (
+            $roleKey === 'designer'
+            && self::columnExists($table, 'delivered_at')
+            && !self::columnExists($table, $config['done_date_col'])
+        ) {
+            $applyTimestampRange($queryDoneToday, 'delivered_at');
         } elseif (!$applyRoleDoneRange($queryDoneToday, $config['done_date_col'])) {
             continue;
         }
@@ -1701,9 +1735,24 @@ $userCounts = User::whereIn('project_id', $projectIds)
         ===================================================== */
 
         $queryReceivedDone = DB::table($table)
-            ->where($config['done_col'], 'yes')
             ->whereNotNull($config['name_col'])
             ->where($config['name_col'], '!=', '');
+
+        if ($roleKey === 'designer') {
+            $queryReceivedDone->where(function ($query) use ($config, $table) {
+                $query->where($config['done_col'], 'yes');
+
+                if (self::columnExists($table, 'final_upload')) {
+                    $query->orWhere('final_upload', 'yes');
+                }
+
+                if (self::columnExists($table, 'workflow_state')) {
+                    $query->orWhere('workflow_state', 'DELIVERED');
+                }
+            });
+        } else {
+            $queryReceivedDone->where($config['done_col'], 'yes');
+        }
 
         if (!$applyProjectCohortRange($queryReceivedDone)) {
             continue;
@@ -1759,7 +1808,6 @@ $userCounts = User::whereIn('project_id', $projectIds)
         'roles' => $roleBreakdown,
     ];
 }
-
 
 
 
@@ -2381,6 +2429,8 @@ $userCounts = User::whereIn('project_id', $projectIds)
         ]);
     }
 
+
+
     /**
      * GET /dashboard/daily-operations
      * CEO Daily Operations View - All projects with layer-wise worker activity and QA metrics.
@@ -2783,6 +2833,7 @@ $userCounts = User::whereIn('project_id', $projectIds)
             'projects'   => $projectsData,
         ];
     }
+
 
 
 
@@ -3987,5 +4038,3 @@ if ($statusFilter === 'pending_by_drawer') {
         };
     }
 }
-
-

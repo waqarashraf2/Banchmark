@@ -51,6 +51,8 @@ class SaPhotoService
             $instructionMaxLength = $this->getInstructionMaxLength();
 
             $nowPK = new DateTime('now', new DateTimeZone('Asia/Karachi'));
+            $existingClientPortalIds = $this->getExistingClientPortalIds($data['tasks']);
+            $queuedClientPortalIds = [];
 
             foreach ($data['tasks'] as $task) {
 
@@ -63,10 +65,24 @@ class SaPhotoService
                     continue;
                 }
 
-                // TIME RULES - Use conduct_date as received_at
-                $conductDate = isset($task['conduct_date']) ? new DateTime($task['conduct_date']) : new DateTime('now', new DateTimeZone('Asia/Karachi'));
-                $receivedAt = $conductDate;
+                $clientPortalId = (string) $task['id'];
+
+                // client_portal_id is the real unique key for this import.
+                // Keep insert-only behavior so existing status/workflow fields are never updated.
+                if (isset($existingClientPortalIds[$clientPortalId]) || isset($queuedClientPortalIds[$clientPortalId])) {
+                    $skipped++;
+                    continue;
+                }
+
+                $queuedClientPortalIds[$clientPortalId] = true;
+
+                // TIME RULES
+                // conduct_date -> received_at
+                // processing_at -> created_at
+                // These can be different or the same depending on the API data.
+                $receivedAt = $this->resolveReceivedAt($task, $nowPK);
                 $dueIn = (clone $receivedAt)->modify('+6 hours');
+                $createdAt = $this->resolveCreatedAt($task, $nowPK);
 
                 $clerkArea = $task['clerk_area'] ?? null;
                 $processorNotes = isset($task['processor_notes']) ? trim((string) $task['processor_notes']) : null;
@@ -77,7 +93,7 @@ class SaPhotoService
 
                     // IDs
                     'order_number' => $task['order_id'],
-                    'client_portal_id' => $task['id'],
+                    'client_portal_id' => $clientPortalId,
                     'project_id' => $this->projectId,
 
                     // CLIENT
@@ -95,7 +111,8 @@ class SaPhotoService
                     // TASK
                     'plan_type' => $task['name'] ?? null,
                     'instruction' => $safeInstruction,
-                    'current_layer' => 'drawer',
+                    'current_layer' => 'designer',
+                    'workflow_type' => 'PH_2_LAYER',
 
                     // ❌ IMPORTANT FIX
                     // DO NOT USE amend from API
@@ -123,7 +140,7 @@ class SaPhotoService
                     'month' => $nowPK->format('m'),
                     'date' => $nowPK->format('d-m-Y'),
 
-                    'created_at' => $nowPK->format('Y-m-d H:i:s'),
+                    'created_at' => $createdAt->format('Y-m-d H:i:s'),
                     'updated_at' => $nowPK->format('Y-m-d H:i:s'),
                 ];
             }
@@ -173,6 +190,64 @@ class SaPhotoService
         }
 
         return null;
+    }
+
+    private function getExistingClientPortalIds(array $tasks): array
+    {
+        $clientPortalIds = collect($tasks)
+            ->pluck('id')
+            ->filter()
+            ->map(fn ($id) => (string) $id)
+            ->unique()
+            ->values();
+
+        if ($clientPortalIds->isEmpty()) {
+            return [];
+        }
+
+        return DB::table($this->table)
+            ->whereIn('client_portal_id', $clientPortalIds->all())
+            ->pluck('client_portal_id')
+            ->mapWithKeys(fn ($id) => [(string) $id => true])
+            ->all();
+    }
+
+    private function resolveReceivedAt(array $task, DateTime $fallback): DateTime
+    {
+        if (empty($task['conduct_date'])) {
+            return clone $fallback;
+        }
+
+        try {
+            return new DateTime($task['conduct_date']);
+        } catch (Exception $exception) {
+            Log::warning('Project19 Photo Import Invalid conduct_date', [
+                'client_portal_id' => $task['id'] ?? null,
+                'conduct_date' => $task['conduct_date'],
+                'message' => $exception->getMessage(),
+            ]);
+
+            return clone $fallback;
+        }
+    }
+
+    private function resolveCreatedAt(array $task, DateTime $fallback): DateTime
+    {
+        if (empty($task['processing_at'])) {
+            return clone $fallback;
+        }
+
+        try {
+            return new DateTime($task['processing_at']);
+        } catch (Exception $exception) {
+            Log::warning('Project19 Photo Import Invalid processing_at', [
+                'client_portal_id' => $task['id'] ?? null,
+                'processing_at' => $task['processing_at'],
+                'message' => $exception->getMessage(),
+            ]);
+
+            return clone $fallback;
+        }
     }
 
     private function normalizeInstructionForInsert(?string $instruction, ?int $maxLength): ?string

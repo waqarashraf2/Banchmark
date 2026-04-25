@@ -22,14 +22,15 @@ class AssignmentEngine
         if (!$project) return null;
 
         $role = $user->role;
-        $queueState = self::getQueueStateForRole($role, $project->workflow_type);
+        $workflowType = self::resolveWorkflowTypeForUser($user, $project);
+        $queueState = self::getQueueStateForRole($role, $workflowType);
         if (!$queueState) return null;
 
         // Check per-user WIP limit (using weighted complexity load)
         $wipLimit = $user->wip_limit ?: 5;
         $currentWip = Order::forProject($project->id)
             ->where('assigned_to', $user->id)
-            ->whereIn('workflow_state', self::getInProgressStatesForRole($role, $project->workflow_type))
+            ->whereIn('workflow_state', self::getInProgressStatesForRole($role, $workflowType))
             ->count();
 
         if ($currentWip >= $wipLimit) {
@@ -71,6 +72,10 @@ class AssignmentEngine
                 $assignData['drawer_id']   = $user->id;
                 $assignData['drawer_name'] = $user->name;
                 $assignData['dassign_time'] = now();
+                if ($role === 'designer') {
+                    $assignData['current_layer'] = 'designer';
+                    $assignData['workflow_type'] = 'PH_2_LAYER';
+                }
             } elseif ($role === 'checker') {
                 $assignData['checker_id']   = $user->id;
                 $assignData['checker_name'] = $user->name;
@@ -483,6 +488,15 @@ class AssignmentEngine
         };
     }
 
+    private static function resolveWorkflowTypeForUser(User $user, ?Project $project): string
+    {
+        if ($user->role === 'designer') {
+            return 'PH_2_LAYER';
+        }
+
+        return $project->workflow_type ?? 'FP_3_LAYER';
+    }
+
     private static function getInProgressStatesForRole(string $role, string $workflowType): array
     {
         if ($workflowType === 'PH_2_LAYER') {
@@ -542,6 +556,9 @@ class AssignmentEngine
                     $updates['drawer_name'] = $user->name;
                     $updates['drawer_id']   = $user->id;
                     $updates['dassign_time'] = now()->toDateTimeString();
+                    if ($role === 'designer') {
+                        $updates['current_layer'] = 'designer';
+                    }
                 } elseif ($role === 'checker') {
                     $updates['checker_name'] = $user->name;
                     $updates['checker_id']   = $user->id;
@@ -587,6 +604,7 @@ class AssignmentEngine
                     // Photos 2-layer: designer done
                     $updates['drawer_done'] = 'yes';
                     $updates['drawer_date'] = now()->toDateTimeString();
+                    $updates['current_layer'] = 'qa';
                 }
             }
 

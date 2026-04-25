@@ -656,7 +656,7 @@ public function cancelOrder(Request $request, int $id)
             $queueState = $preHoldState;
         } else {
             // Fallback: determine from workflow type
-        $queueState = $order->workflow_type === 'PH_2_LAYER' ? 'QUEUED_DESIGN' : 'QUEUED_DRAW';
+            $queueState = $order->workflow_type === 'PH_2_LAYER' ? 'QUEUED_DESIGN' : 'QUEUED_DRAW';
         }
 
         DB::transaction(function () use ($order, $queueState, $user) {
@@ -727,7 +727,7 @@ public function myStats(Request $request)
 
         $project = $user->project;
 
-        $queueStates = StateMachine::getQueuedStates(self::resolveWorkflowTypeForUser($user, $project));
+        $queueStates = StateMachine::getQueuedStates($project->workflow_type ?? 'FP_3_LAYER');
 
         $roleQueueState = collect($queueStates)->first(function ($state) use ($user) {
             $role = StateMachine::getRoleForState($state);
@@ -848,7 +848,7 @@ public function myQueue(Request $request)
             ->toArray();
     }
 
-    $queueStates = StateMachine::getQueuedStates(self::resolveWorkflowTypeForUser($user, $project));
+    $queueStates = StateMachine::getQueuedStates($project->workflow_type ?? 'FP_3_LAYER');
     
     $roleQueueState = collect($queueStates)->first(function ($state) use ($user) {
         $role = StateMachine::getRoleForState($state);
@@ -1455,11 +1455,10 @@ public function startTimer(Request $request, int $id)
     }
 
     $workflowMap = [
-        'drawer'   => 'IN_DRAW',
-        'designer' => 'IN_DESIGN',
-        'checker'  => 'IN_CHECK',
-        'filler'   => 'IN_FILLER',
-        'qa'       => 'IN_QA',
+        'drawer'  => 'IN_DRAW',
+        'checker' => 'IN_CHECK',
+        'filler'  => 'IN_FILLER',
+        'qa'      => 'IN_QA',
     ];
 
     $workflowState = $workflowMap[$role] ?? 'IN_' . strtoupper($role);
@@ -1524,11 +1523,7 @@ public function startTimer(Request $request, int $id)
 
         if ($idCol && (!$order->{$idCol} || $order->{$idCol} == 0)) {
             $updates[$idCol] = $user->id;
-            $updates[
-                $role === 'filler'
-                    ? 'file_uploader_name'
-                    : ($role === 'designer' ? 'drawer_name' : "{$role}_name")
-            ] = $user->name;
+            $updates[$role === 'filler' ? 'file_uploader_name' : "{$role}_name"] = $user->name;
         }
 
         $updates['assigned_to'] = $user->id;
@@ -1536,9 +1531,8 @@ public function startTimer(Request $request, int $id)
         $updates['status'] = 'in-progress';
         $updates['started_at'] = now();
         if ($role === 'filler') $updates['current_layer'] = 'filler';
-        if ($role === 'designer') $updates['current_layer'] = 'designer';
 
-        if ($role === 'drawer' || $role === 'designer') $updates['dassign_time'] = now();
+        if ($role === 'drawer') $updates['dassign_time'] = now();
         if ($role === 'checker') $updates['cassign_time'] = now();
         if ($role === 'filler') $updates['fassign_time'] = now();
 
@@ -1549,19 +1543,14 @@ public function startTimer(Request $request, int $id)
             'project_id' => $order->project_id,
             'order_number' => $order->order_number,
             $idCol => $user->id,
-            (
-                $role === 'filler'
-                    ? 'file_uploader_name'
-                    : ($role === 'designer' ? 'drawer_name' : "{$role}_name")
-            ) => $user->name,
+            ($role === 'filler' ? 'file_uploader_name' : "{$role}_name") => $user->name,
             'assigned_to' => $user->id,
             'workflow_state' => $workflowState,
             'updated_at' => now(),
         ];
         if ($role === 'filler' && Schema::hasColumn('crm_order_assignments', 'current_layer')) $crmAssignData['current_layer'] = 'filler';
-        if ($role === 'designer' && Schema::hasColumn('crm_order_assignments', 'current_layer')) $crmAssignData['current_layer'] = 'designer';
 
-        if ($role === 'drawer' || $role === 'designer') $crmAssignData['dassign_time'] = now();
+        if ($role === 'drawer') $crmAssignData['dassign_time'] = now();
         if ($role === 'checker') $crmAssignData['cassign_time'] = now();
         if ($role === 'filler' && Schema::hasColumn('crm_order_assignments', 'fassign_time')) $crmAssignData['fassign_time'] = now();
 
@@ -1577,7 +1566,7 @@ public function startTimer(Request $request, int $id)
         // 🟢 WorkItem stage mapping (UNCHANGED)
         $stageMap = [
             'drawer'   => 'DRAW',
-            'designer' => 'DESIGN',
+            'designer' => 'DRAW',
             'checker'  => 'CHECK',
             'filler'   => 'FILL',
             'qa'       => 'QA',
@@ -1634,7 +1623,6 @@ public function startTimer(Request $request, int $id)
 
 
 
-
     /**
      * POST /workflow/orders/{id}/timer/stop
      * Stop work timer and record time.
@@ -1681,13 +1669,7 @@ public function startTimer(Request $request, int $id)
     {
         $user = $request->user();
         $order = self::findOrderForUser($id, $user);
-        $order->load([
-            'project',
-            'team',
-            'workItems' => fn ($query) => $query
-                ->where('project_id', $order->project_id)
-                ->with('assignedUser'),
-        ]);
+        $order->load(['project', 'team', 'workItems.assignedUser']);
 
         // Get help requests for this order
         $helpRequests = \App\Models\HelpRequest::where('order_id', $order->id)
@@ -1701,7 +1683,6 @@ public function startTimer(Request $request, int $id)
 
         // Current work item time tracking
         $currentWorkItem = WorkItem::where('order_id', $order->id)
-            ->where('project_id', $order->project_id)
             ->where('assigned_user_id', $user->id)
             ->where('status', 'in_progress')
             ->first();
@@ -2541,22 +2522,12 @@ public function qaTeamMembers(Request $request)
     private static function getRoleColumns(string $role): array
     {
         return match ($role) {
-            'drawer' => ['drawer_id', 'drawer_done', 'IN_DRAW', 'drawer_date'],
-            'designer' => ['drawer_id', 'drawer_done', 'IN_DESIGN', 'drawer_date'],
+            'drawer', 'designer' => ['drawer_id', 'drawer_done', 'IN_DRAW', 'drawer_date'],
             'checker' => ['checker_id', 'checker_done', 'IN_CHECK', 'checker_date'],
             'filler' => ['file_uploader_id', 'file_uploaded', 'IN_FILLER', 'file_upload_date'],
             'qa' => ['qa_id', 'final_upload', 'IN_QA', 'ausFinaldate'],
             default => [null, null, null, null],
         };
-    }
-
-    private static function resolveWorkflowTypeForUser($user, $project): string
-    {
-        if (($user->role ?? null) === 'designer') {
-            return 'PH_2_LAYER';
-        }
-
-        return $project->workflow_type ?? 'FP_3_LAYER';
     }
 
     /**
@@ -2623,15 +2594,14 @@ public function qaTeamMembers(Request $request)
         return false;
     }
 
-
     /**
      * POST /workflow/orders/{id}/assign-role
-     * PM assigns a specific role (drawer/designer/checker/filler/qa) user to an order.
+     * PM assigns a specific role (drawer/checker/qa) user to an order.
      */
 public function assignRole(Request $request, int $id)
 {
     $request->validate([
-        'role' => 'required|in:drawer,designer,checker,filler,qa',
+        'role' => 'required|in:drawer,checker,filler,qa',
         'user_id' => 'required|exists:users,id',
         'project_id' => 'nullable|integer|exists:projects,id',
     ]);
@@ -2646,22 +2616,13 @@ public function assignRole(Request $request, int $id)
     $user = \App\Models\User::findOrFail($request->input('user_id'));
     $role = $request->input('role');
 
-    if ($user->role !== $role) {
-        return response()->json(['message' => "Selected user must have the {$role} role."], 422);
-    }
-
     if ($role === 'filler' && (int) $order->project_id !== 12) {
         return response()->json(['message' => 'Filler assignment is only enabled for project 12.'], 422);
-    }
-
-    if ($role === 'designer' && $order->workflow_type !== 'PH_2_LAYER') {
-        return response()->json(['message' => 'Designer assignment is only enabled for PH_2_LAYER workflow orders.'], 422);
     }
 
     // DONE LOCK
     $doneLockMap = [
         'drawer'  => 'drawer_done',
-        'designer' => 'drawer_done',
         'checker' => 'checker_done',
         'filler'  => 'file_uploaded',
         'qa'      => 'final_upload',
@@ -2678,7 +2639,6 @@ if ($doneCol && strtolower(trim($order->{$doneCol} ?? '')) === 'yes') {
     // Role column mapping
     $colMap = [
         'drawer'  => ['id_col' => 'drawer_id',  'name_col' => 'drawer_name',  'time_col' => 'dassign_time'],
-        'designer' => ['id_col' => 'drawer_id',  'name_col' => 'drawer_name',  'time_col' => 'dassign_time'],
         'checker' => ['id_col' => 'checker_id', 'name_col' => 'checker_name', 'time_col' => 'cassign_time'],
         'filler'  => ['id_col' => 'file_uploader_id', 'name_col' => 'file_uploader_name', 'time_col' => 'fassign_time'],
         'qa'      => ['id_col' => 'qa_id',      'name_col' => 'qa_name',      'time_col' => null],
@@ -2688,7 +2648,6 @@ if ($doneCol && strtolower(trim($order->{$doneCol} ?? '')) === 'yes') {
 
     $roleToInState = [
         'drawer'  => 'IN_DRAW',
-        'designer' => 'IN_DESIGN',
         'checker' => 'IN_CHECK',
         'filler'  => 'IN_FILLER',
         'qa'      => 'IN_QA',
@@ -2710,8 +2669,6 @@ if ($doneCol && strtolower(trim($order->{$doneCol} ?? '')) === 'yes') {
         ];
         if ($role === 'filler') {
             $updates['current_layer'] = 'filler';
-        } elseif ($role === 'designer') {
-            $updates['current_layer'] = 'designer';
         }
 
         if ($cols['time_col']) {
@@ -2798,10 +2755,6 @@ if ($doneCol && strtolower(trim($order->{$doneCol} ?? '')) === 'yes') {
             $assignData[$cols['time_col']] = now();
         }
 
-        if (Schema::hasColumn('crm_order_assignments', 'current_layer') && isset($updates['current_layer'])) {
-            $assignData['current_layer'] = $updates['current_layer'];
-        }
-
         // preserve full data on insert
         $assignData['drawer_id']    = $verified->drawer_id;
         $assignData['drawer_name']  = $verified->drawer_name;
@@ -2831,6 +2784,5 @@ if ($doneCol && strtolower(trim($order->{$doneCol} ?? '')) === 'yes') {
         'message' => ucfirst($role) . " assigned: {$user->name}",
     ]);
 }
-
 
 }
