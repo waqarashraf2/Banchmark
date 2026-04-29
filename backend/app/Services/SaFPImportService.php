@@ -47,10 +47,12 @@ class SaFPImportService
 
             $records = [];
             $inserted = 0;
+            $updated = 0;
             $skipped = 0;
             $instructionMaxLength = $this->getInstructionMaxLength();
 
             $nowPK = new DateTime('now', new DateTimeZone('Asia/Karachi'));
+            $queuedClientPortalIds = [];
 
             foreach ($data['tasks'] as $task) {
 
@@ -63,10 +65,29 @@ class SaFPImportService
                     continue;
                 }
 
-                // TIME RULES - Use conduct_date as received_at
-                $conductDate = isset($task['conduct_date']) ? new DateTime($task['conduct_date']) : new DateTime('now', new DateTimeZone('Asia/Karachi'));
-                $receivedAt = $conductDate;
+                $clientPortalId = (string) $task['id'];
+                $sourceOrderNumber = (string) $task['order_id'];
+
+                // client_portal_id is the real unique task identity for this import.
+                // Skip duplicate task IDs inside the same API payload.
+                if (isset($queuedClientPortalIds[$clientPortalId])) {
+                    $skipped++;
+                    Log::info('Project12 Import Duplicate client_portal_id in API payload skipped', [
+                        'order_number' => $sourceOrderNumber,
+                        'client_portal_id' => $clientPortalId,
+                    ]);
+                    continue;
+                }
+
+                $queuedClientPortalIds[$clientPortalId] = true;
+
+                // TIME RULES
+                // processing_date / processing_at -> received_at
+                // conduct_date -> created_at
+                $receivedAt = $this->resolveReceivedAt($task, $nowPK);
                 $dueIn = (clone $receivedAt)->modify('+6 hours');
+                $createdAt = $this->resolveCreatedAt($task, $nowPK);
+                $storedOrderNumber = $this->resolveStoredOrderNumber($sourceOrderNumber, $clientPortalId);
 
                 $clerkArea = $task['clerk_area'] ?? null;
                 $processorNotes = isset($task['processor_notes']) ? trim((string) $task['processor_notes']) : null;
@@ -76,9 +97,10 @@ class SaFPImportService
                 $records[] = [
 
                     // IDs
-                    'order_number' => $task['order_id'],
-                    'client_portal_id' => $task['id'],
+                    'order_number' => $storedOrderNumber,
+                    'client_portal_id' => $clientPortalId,
                     'project_id' => $this->projectId,
+                    'client_reference' => $sourceOrderNumber,
 
                     // CLIENT
                     'client_name' => $task['client'] ?? null,
@@ -123,7 +145,7 @@ class SaFPImportService
                     'month' => $nowPK->format('m'),
                     'date' => $nowPK->format('d-m-Y'),
 
-                    'created_at' => $nowPK->format('Y-m-d H:i:s'),
+                    'created_at' => $createdAt->format('Y-m-d H:i:s'),
                     'updated_at' => $nowPK->format('Y-m-d H:i:s'),
                 ];
             }
@@ -135,7 +157,12 @@ class SaFPImportService
                         if ($result === 1) {
                             $inserted++;
                         } else {
-                            $skipped++;
+                            $updatedRows = $this->updateExistingImportTimestamps($record);
+                            if ($updatedRows > 0) {
+                                $updated++;
+                            } else {
+                                $skipped++;
+                            }
                         }
                     } catch (Exception $rowException) {
                         $skipped++;
@@ -150,6 +177,7 @@ class SaFPImportService
                 Log::info('Project12 Import Completed', [
                     'fetched' => count($records),
                     'inserted' => $inserted,
+                    'updated' => $updated,
                     'skipped' => $skipped,
                     'instruction_max_length' => $instructionMaxLength,
                 ]);
@@ -173,6 +201,137 @@ class SaFPImportService
         }
 
         return null;
+    }
+
+    private function resolveReceivedAt(array $task, DateTime $fallback): DateTime
+    {
+        $processingValue = $task['processing_date'] ?? $task['processing_at'] ?? null;
+
+        if (empty($processingValue)) {
+            if (!empty($task['conduct_date'])) {
+                try {
+                    return new DateTime($task['conduct_date']);
+                } catch (Exception $exception) {
+                    Log::warning('Project12 Import Invalid conduct_date fallback for received_at', [
+                        'client_portal_id' => $task['id'] ?? null,
+                        'conduct_date' => $task['conduct_date'],
+                        'message' => $exception->getMessage(),
+                    ]);
+                }
+            }
+
+            return clone $fallback;
+        }
+
+        try {
+            return new DateTime($processingValue);
+        } catch (Exception $exception) {
+            Log::warning('Project12 Import Invalid processing date', [
+                'client_portal_id' => $task['id'] ?? null,
+                'processing_date' => $task['processing_date'] ?? null,
+                'processing_at' => $task['processing_at'] ?? null,
+                'message' => $exception->getMessage(),
+            ]);
+
+            if (!empty($task['conduct_date'])) {
+                try {
+                    return new DateTime($task['conduct_date']);
+                } catch (Exception $fallbackException) {
+                    Log::warning('Project12 Import Invalid conduct_date fallback for received_at', [
+                        'client_portal_id' => $task['id'] ?? null,
+                        'conduct_date' => $task['conduct_date'],
+                        'message' => $fallbackException->getMessage(),
+                    ]);
+                }
+            }
+
+            return clone $fallback;
+        }
+    }
+
+    private function resolveCreatedAt(array $task, DateTime $fallback): DateTime
+    {
+        if (empty($task['conduct_date'])) {
+            return clone $fallback;
+        }
+
+        try {
+            return new DateTime($task['conduct_date']);
+        } catch (Exception $exception) {
+            Log::warning('Project12 Import Invalid conduct_date', [
+                'client_portal_id' => $task['id'] ?? null,
+                'conduct_date' => $task['conduct_date'],
+                'message' => $exception->getMessage(),
+            ]);
+
+            return clone $fallback;
+        }
+    }
+
+    private function updateExistingImportTimestamps(array $record): int
+    {
+        $clientPortalId = $record['client_portal_id'] ?? null;
+        $orderNumber = $record['order_number'] ?? null;
+
+        $query = DB::table($this->table);
+
+        if ($clientPortalId !== null && $clientPortalId !== '') {
+            $query->where('client_portal_id', $clientPortalId);
+        } elseif ($orderNumber !== null && $orderNumber !== '') {
+            $query->where('order_number', $orderNumber);
+        } else {
+            return 0;
+        }
+
+        return $query
+            ->update([
+                'order_number' => $record['order_number'] ?? null,
+                'client_reference' => $record['client_reference'] ?? null,
+                'client_portal_id' => $record['client_portal_id'] ?? null,
+                'received_at' => $record['received_at'] ?? null,
+                'due_in' => $record['due_in'] ?? null,
+                'created_at' => $record['created_at'] ?? null,
+                'updated_at' => $record['updated_at'] ?? now(),
+            ]);
+    }
+
+    private function resolveStoredOrderNumber(string $sourceOrderNumber, string $clientPortalId): string
+    {
+        $existingByPortal = $this->findExistingOrderByClientPortalId($clientPortalId);
+        if ($existingByPortal && !empty($existingByPortal->order_number)) {
+            return (string) $existingByPortal->order_number;
+        }
+
+        $existingByOrderNumber = DB::table($this->table)
+            ->where('order_number', $sourceOrderNumber)
+            ->first(['order_number', 'client_portal_id']);
+
+        if (!$existingByOrderNumber) {
+            return $sourceOrderNumber;
+        }
+
+        if ((string) ($existingByOrderNumber->client_portal_id ?? '') === $clientPortalId) {
+            return $sourceOrderNumber;
+        }
+
+        $candidate = $sourceOrderNumber . '-' . $clientPortalId;
+
+        if (!DB::table($this->table)->where('order_number', $candidate)->exists()) {
+            return $candidate;
+        }
+
+        return $candidate . '-' . Str::lower(Str::random(4));
+    }
+
+    private function findExistingOrderByClientPortalId(?string $clientPortalId): ?object
+    {
+        if ($clientPortalId === null || $clientPortalId === '') {
+            return null;
+        }
+
+        return DB::table($this->table)
+            ->where('client_portal_id', $clientPortalId)
+            ->first(['order_number', 'client_portal_id']);
     }
 
     private function normalizeInstructionForInsert(?string $instruction, ?int $maxLength): ?string

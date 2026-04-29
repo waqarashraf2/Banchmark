@@ -36,6 +36,13 @@ export default function DesignerWorkForm({ order, onComplete, onClose }: Designe
   const [virtualStaging, setVirtualStaging] = useState(false);
   const [outputNotes, setOutputNotes] = useState('');
 
+  // PH_2_LAYER image counts
+  const isPh2Layer = order.workflow_type === 'PH_2_LAYER';
+  const [totalImages, setTotalImages] = useState('');
+  const [hdrImages, setHdrImages] = useState('');
+  const [editImages, setEditImages] = useState('');
+  const [normalFinalImages, setNormalFinalImages] = useState('');
+
   // Flag/Help
   const [showFlag, setShowFlag] = useState(false);
   const [flagDescription, setFlagDescription] = useState('');
@@ -95,9 +102,14 @@ export default function DesignerWorkForm({ order, onComplete, onClose }: Designe
       if (skyReplacement) tasks.push('Sky Replacement');
       if (virtualStaging) tasks.push('Virtual Staging');
 
+      const imageCounts = isPh2Layer && (totalImages || hdrImages || editImages || normalFinalImages)
+        ? `Images — Total: ${totalImages || 0}, HDR: ${hdrImages || 0}, Edit: ${editImages || 0}, Normal/Final: ${normalFinalImages || 0}`
+        : null;
+
       const summary = [
         `Enhancement: ${enhancementType}`,
         tasks.length > 0 ? `Tasks: ${tasks.join(', ')}` : null,
+        imageCounts,
         outputNotes ? `Output notes: ${outputNotes}` : null,
         comment ? `Comments: ${comment}` : null,
       ].filter(Boolean).join('\n');
@@ -351,6 +363,33 @@ export default function DesignerWorkForm({ order, onComplete, onClose }: Designe
                       ))}
                     </div>
                   </div>
+
+                  {/* PH_2_LAYER Image Counts */}
+                  {isPh2Layer && (
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 mb-2">Image Counts</label>
+                      <div className="grid grid-cols-2 gap-3">
+                        {[
+                          { label: 'Total Images', value: totalImages, setter: setTotalImages },
+                          { label: 'HDR Images', value: hdrImages, setter: setHdrImages },
+                          { label: 'Edit Images', value: editImages, setter: setEditImages },
+                          { label: 'Normal/Final Images', value: normalFinalImages, setter: setNormalFinalImages },
+                        ].map(field => (
+                          <div key={field.label}>
+                            <label className="block text-xs text-slate-500 mb-1">{field.label}</label>
+                            <input
+                              type="number"
+                              min="0"
+                              className="w-full text-sm rounded-lg border border-slate-200 px-3 py-2 focus:ring-pink-500 focus:border-pink-500"
+                              placeholder="0"
+                              value={field.value}
+                              onChange={e => field.setter(e.target.value)}
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
 
                   {/* Output Notes */}
                   <div>

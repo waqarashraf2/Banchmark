@@ -1541,5 +1541,3 @@ export default function WorkerDashboard() {
     </AnimatedPage>
   );
 }
-
-

@@ -852,6 +852,7 @@ export interface AssignmentDateStat {
   label: string;
   day_label: string;
   high: number;
+  priority?: number;
   regular: number;
   total: number;
   drawer_done: number;

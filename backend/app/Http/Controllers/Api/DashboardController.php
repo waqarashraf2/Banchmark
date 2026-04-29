@@ -20,6 +20,9 @@ class DashboardController extends Controller
         16 => 2,
     ];
     private const ASSIGNMENT_DASHBOARD_TIMEZONE_PROJECT_IDS = [7, 8, 42];
+    private const ASSIGNMENT_DASHBOARD_PAGINATED_PROJECT_IDS = [1, 3, 16];
+    private const ASSIGNMENT_DASHBOARD_SPECIAL_PRIORITY_PROJECT_IDS = [1, 3,];
+    private const ASSIGNMENT_DASHBOARD_SPECIAL_PROJECTS_PER_PAGE = 100;
 
     
 public function batchStatusReport(Request $request)
@@ -3230,9 +3233,14 @@ $endDate = $request->input('end_date');
 
         $search = $request->input('search');
         $assignedTo = $request->input('assigned_to');
-        // Pagination removed – return all orders in a single page
-        // $page = (int) $request->input('page', 1);
-        // $perPage = (int) $request->input('per_page', 15);
+        $shouldPaginateOrders = !empty(array_intersect($projectIds, self::ASSIGNMENT_DASHBOARD_PAGINATED_PROJECT_IDS));
+        $hasSpecialPriorityProjects = !empty(array_intersect($projectIds, self::ASSIGNMENT_DASHBOARD_SPECIAL_PRIORITY_PROJECT_IDS));
+        $page = max((int) $request->input('page', 1), 1);
+        $defaultPerPage = $shouldPaginateOrders ? self::ASSIGNMENT_DASHBOARD_SPECIAL_PROJECTS_PER_PAGE : 15;
+        $requestedPerPage = max((int) $request->input('per_page', $defaultPerPage), 1);
+        $perPage = $shouldPaginateOrders
+            ? min($requestedPerPage, self::ASSIGNMENT_DASHBOARD_SPECIAL_PROJECTS_PER_PAGE)
+            : $requestedPerPage;
 
         // Selected columns
         $selectCols = 'id, order_number, code, plan_type, project_id, client_reference, address, client_name, instruction,'
@@ -3246,7 +3254,7 @@ $endDate = $request->input('end_date');
 
         // Optional columns that may not exist in all project tables
         $optionalCols = [
-            'VARIANT_no', 'batch_number', 'date', 'bedrooms', 'client_portal_id',
+              'VARIANT_no', 'batch_number', 'date', 'bedrooms', 'client_portal_id', 'clint_order_number',
             'current_layer', 'file_uploader_id', 'file_uploader_name',
             'fassign_time', 'file_uploaded', 'file_upload_date',
         ];
@@ -3256,7 +3264,7 @@ $endDate = $request->input('end_date');
 
         // Overlay CRM assignments (survives external cron truncation of project tables)
         // LEFT JOIN crm_order_assignments and COALESCE to prefer CRM values
-        $unionQuery = "SELECT qo.id, qo.order_number, qo.client_portal_id, qo.VARIANT_no, qo.batch_number, qo.date, qo.bedrooms, qo.project_id, qo.client_reference, qo.address, qo.client_name, qo.code, qo.plan_type, qo.instruction,"
+        $unionQuery = "SELECT qo.id, qo.order_number, qo.client_portal_id, qo.clint_order_number, qo.VARIANT_no, qo.batch_number, qo.date, qo.bedrooms, qo.project_id, qo.client_reference, qo.address, qo.client_name, qo.code, qo.plan_type, qo.instruction,"
             . "COALESCE(NULLIF(coa.current_layer,''), qo.current_layer) as current_layer, "
             . "COALESCE(coa.workflow_state, qo.workflow_state) as workflow_state, "
             . "qo.priority, "
@@ -3509,12 +3517,15 @@ if ($statusFilter === 'pending_by_drawer') {
             ELSE due_in
         END";
 
-        $orders = (clone $query)
-            ->orderByRaw("FIELD(priority, 'rush', 'urgent', 'high', 'normal', 'low', '') ASC")
+        $priorityOrderExpr = "FIELD(priority, 'rush', 'urgent', 'priority', 'high', 'normal', 'low', '')";
+
+        $orderedQuery = (clone $query)
+            ->orderByRaw("{$priorityOrderExpr} ASC")
             ->orderByRaw("CASE WHEN due_in IS NOT NULL THEN TIMESTAMPDIFF(SECOND, NOW(), {$dueInOrderExpr}) ELSE 999999999 END ASC")
             ->orderBy('received_at', 'asc')
-            ->orderBy('id', 'asc')
-            ->get();
+            ->orderBy('id', 'asc');
+
+        $orders = $orderedQuery->get();
 
         $assignmentAreaMap = $this->buildAssignmentDashboardAreaMap($orders);
 
@@ -3538,6 +3549,22 @@ if ($statusFilter === 'pending_by_drawer') {
         });
 
         $total = $orders->count();
+
+        $ordersResponseData = $shouldPaginateOrders
+            ? $orders->forPage($page, $perPage)->values()
+            : $orders;
+
+        $priorityCountsRow = (clone $query)->selectRaw("
+            SUM(CASE WHEN priority = 'normal' THEN 1 ELSE 0 END) as normal_count,
+            SUM(CASE WHEN priority = 'high' THEN 1 ELSE 0 END) as high_count,
+            SUM(CASE WHEN priority = 'priority' THEN 1 ELSE 0 END) as priority_count,
+            SUM(CASE WHEN priority IN ('urgent', 'rush') THEN 1 ELSE 0 END) as urgent_count
+        ")->first();
+
+        $normalPriorityCount = (int) ($priorityCountsRow->normal_count ?? 0);
+        $highPriorityCount = (int) ($priorityCountsRow->high_count ?? 0);
+        $priorityPriorityCount = (int) ($priorityCountsRow->priority_count ?? 0);
+        $urgentPriorityCount = (int) ($priorityCountsRow->urgent_count ?? 0);
 
         // ─── 3. Counts (single aggregation query instead of 6 separate queries) ───
         $baseQ = DB::table(DB::raw("({$unionQuery}) as queue_orders"));
@@ -3586,7 +3613,9 @@ if ($statusFilter === 'pending_by_drawer') {
             ->where('received_at', '>=', $sevenDaysAgo)
             ->selectRaw("
                 DATE(received_at) as the_date,
-                SUM(CASE WHEN priority IN ('urgent','high') THEN 1 ELSE 0 END) as high_count,
+                SUM(CASE WHEN priority = 'urgent' OR priority = 'rush' THEN 1 ELSE 0 END) as urgent_count,
+                SUM(CASE WHEN priority = 'priority' THEN 1 ELSE 0 END) as priority_count,
+                SUM(CASE WHEN priority = 'high' THEN 1 ELSE 0 END) as high_count,
                 SUM(CASE WHEN priority IN ('normal','low') THEN 1 ELSE 0 END) as regular_count,
                 SUM(CASE WHEN drawer_done = 'yes' THEN 1 ELSE 0 END) as drawer_done,
                 SUM(CASE WHEN checker_done = 'yes' THEN 1 ELSE 0 END) as checker_done,
@@ -3610,6 +3639,8 @@ if ($statusFilter === 'pending_by_drawer') {
             $d = today()->subDays($i);
             $dStr = $d->toDateString();
             $dayData = $receivedByDate[$dStr] ?? null;
+            $urgentCount = (int) ($dayData->urgent_count ?? 0);
+            $priorityCount = (int) ($dayData->priority_count ?? 0);
             $highCount = (int) ($dayData->high_count ?? 0);
             $regularCount = (int) ($dayData->regular_count ?? 0);
 
@@ -3617,9 +3648,11 @@ if ($statusFilter === 'pending_by_drawer') {
                 'date' => $dStr,
                 'label' => $d->format('D'),
                 'day_label' => $d->format('d M'),
+                'urgent' => $urgentCount,
+                'priority' => $priorityCount,
                 'high' => $highCount,
                 'regular' => $regularCount,
-                'total' => $highCount + $regularCount,
+                'total' => $urgentCount + $priorityCount + $highCount + $regularCount,
                 'drawer_done' => (int) ($dayData->drawer_done ?? 0),
                 'checker_done' => (int) ($dayData->checker_done ?? 0),
                 'qa_done' => (int) ($dayData->qa_done ?? 0),
@@ -3661,32 +3694,42 @@ if ($statusFilter === 'pending_by_drawer') {
             'workflow_type' => $workflowType,
         ];
 
+        $counts = [
+            'today_total' => $todayTotal,
+            'pending' => $pendingCount,
+            'completed' => $completedCount,
+            'amends' => $amendsCount,
+            'assigned' => $assignedCount,
+            'pending_by_drawer' => $pendingByDrawerCount,
+            'unassigned' => $unassignedCount,
+            'normal_priority' => $normalPriorityCount,
+            'high_priority' => $highPriorityCount,
+            'urgent_priority' => $urgentPriorityCount,
+        ];
+
+        if ($priorityPriorityCount > 0) {
+            $counts['priority_priority'] = $priorityPriorityCount;
+        }
+
         return response()->json([
             'queue' => $queueInfo,
             // Keep backward compat: 'project' key returns first project info
             'project' => $primaryProject->only(['id', 'code', 'name', 'country', 'department', 'workflow_type', 'timezone']),
             'workers' => $workers,
             'orders' => [
-                'data' => $orders,
-                'current_page' => 1,
-                'per_page' => $total ?: 1,
+                'data' => $ordersResponseData,
+                'current_page' => $shouldPaginateOrders ? $page : 1,
+                'per_page' => $shouldPaginateOrders ? $perPage : ($total ?: 1),
                 'total' => $total,
-                'last_page' => 1,
+                'last_page' => $shouldPaginateOrders ? max((int) ceil($total / $perPage), 1) : 1,
             ],
-            'counts' => [
-                'today_total' => $todayTotal,
-                'pending' => $pendingCount,
-                'completed' => $completedCount,
-                'amends' => $amendsCount,
-                'assigned' => $assignedCount,
-                'pending_by_drawer' => $pendingByDrawerCount, // NEW
-                'unassigned' => $unassignedCount,
-            ],
+            'counts' => $counts,
             'date_stats' => $dateStats,
             'role_completions' => $roleCompletions,
         ]);
     }
 
+ 
  
  
  
@@ -4038,3 +4081,9 @@ if ($statusFilter === 'pending_by_drawer') {
         };
     }
 }
+
+
+
+
+
+

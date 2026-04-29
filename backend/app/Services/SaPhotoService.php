@@ -51,13 +51,13 @@ class SaPhotoService
             $instructionMaxLength = $this->getInstructionMaxLength();
 
             $nowPK = new DateTime('now', new DateTimeZone('Asia/Karachi'));
-            $existingClientPortalIds = $this->getExistingClientPortalIds($data['tasks']);
             $queuedClientPortalIds = [];
 
             foreach ($data['tasks'] as $task) {
 
-                // ONLY PHOTO CATEGORY - process tasks from product_category_id = 3 only
-                if (!isset($task['product_category_id']) || (int) $task['product_category_id'] !== 3) {
+                // PHOTO + ELEVATED CATEGORIES
+                // Accept product_category_id 3 and 4.
+                if (!isset($task['product_category_id']) || !in_array((int) $task['product_category_id'], [3, 4], true)) {
                     continue;
                 }
 
@@ -69,8 +69,12 @@ class SaPhotoService
 
                 // client_portal_id is the real unique key for this import.
                 // Keep insert-only behavior so existing status/workflow fields are never updated.
-                if (isset($existingClientPortalIds[$clientPortalId]) || isset($queuedClientPortalIds[$clientPortalId])) {
+                if (isset($queuedClientPortalIds[$clientPortalId])) {
                     $skipped++;
+                    Log::info('Project19 Photo Import Duplicate client_portal_id in API payload skipped', [
+                        'order_number' => $task['order_id'] ?? null,
+                        'client_portal_id' => $clientPortalId,
+                    ]);
                     continue;
                 }
 
@@ -92,8 +96,9 @@ class SaPhotoService
                 $records[] = [
 
                     // IDs
-                    'order_number' => $task['order_id'],
-                    'client_portal_id' => $clientPortalId,
+                        'order_number' => $clientPortalId,
+                        'client_portal_id' => $clientPortalId,
+                        'clint_order_number' => isset($task['order_id']) ? (string) $task['order_id'] : null,
                     'project_id' => $this->projectId,
 
                     // CLIENT
@@ -148,13 +153,27 @@ class SaPhotoService
             if (!empty($records)) {
                 foreach ($records as $record) {
                     try {
-                        $result = DB::table($this->table)->insertOrIgnore([$record]);
-                        if ($result === 1) {
-                            $inserted++;
-                        } else {
+                        if ($this->clientPortalIdExists($record['client_portal_id'] ?? null)) {
                             $skipped++;
+                            Log::info('Project19 Photo Import Existing client_portal_id skipped', [
+                                'order_number' => $record['order_number'] ?? null,
+                                'client_portal_id' => $record['client_portal_id'] ?? null,
+                            ]);
+                            continue;
                         }
+
+                        DB::table($this->table)->insert([$record]);
+                        $inserted++;
                     } catch (Exception $rowException) {
+                        if ($this->clientPortalIdExists($record['client_portal_id'] ?? null)) {
+                            $skipped++;
+                            Log::info('Project19 Photo Import Duplicate client_portal_id skipped during insert', [
+                                'order_number' => $record['order_number'] ?? null,
+                                'client_portal_id' => $record['client_portal_id'] ?? null,
+                            ]);
+                            continue;
+                        }
+
                         $skipped++;
                         Log::warning('Project19 Photo Import Row Skipped', [
                             'order_number' => $record['order_number'] ?? null,
@@ -192,24 +211,15 @@ class SaPhotoService
         return null;
     }
 
-    private function getExistingClientPortalIds(array $tasks): array
+    private function clientPortalIdExists(?string $clientPortalId): bool
     {
-        $clientPortalIds = collect($tasks)
-            ->pluck('id')
-            ->filter()
-            ->map(fn ($id) => (string) $id)
-            ->unique()
-            ->values();
-
-        if ($clientPortalIds->isEmpty()) {
-            return [];
+        if ($clientPortalId === null || $clientPortalId === '') {
+            return false;
         }
 
         return DB::table($this->table)
-            ->whereIn('client_portal_id', $clientPortalIds->all())
-            ->pluck('client_portal_id')
-            ->mapWithKeys(fn ($id) => [(string) $id => true])
-            ->all();
+            ->where('client_portal_id', $clientPortalId)
+            ->exists();
     }
 
     private function resolveReceivedAt(array $task, DateTime $fallback): DateTime

@@ -241,7 +241,7 @@ export const dashboardService = {
 
   // Assignment Dashboard — queue-based view combining orders from all projects in a queue
   assignmentDashboard: (queueName: string, params?: {
-    status?: string; date?: string; search?: string; assigned_to?: number; page?: number; per_page?: number;
+    status?: string; date?: string; search?: string; assigned_to?: number; page?: number; per_page?: number; start_date?: string; end_date?: string;
   }) => api.get<AssignmentDashboardData>(`/dashboard/assignment/${encodeURIComponent(queueName)}`, { params }),
 };
 

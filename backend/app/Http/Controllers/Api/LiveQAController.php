@@ -560,19 +560,7 @@ $toDateTime   = $request->input('to_datetime');
         // Date filter — no default date restriction so Live QA sees all
         // orders needing review regardless of when they were created.
         // Users can manually pick a date to narrow down.
-// Default to today if no date provided
-// Priority 1: datetime range filter (received_at)
-if ($fromDateTime && $toDateTime) {
-    $query->whereBetween('received_at', [$fromDateTime, $toDateTime]);
-}
-// Priority 2: single date filter (fallback, still using received_at)
-elseif (!$dateStr || $dateStr === 'today') {
-    $query->whereDate('received_at', now()->toDateString());
-}
-elseif ($dateStr !== 'all') {
-    $query->whereDate('received_at', $dateStr);
-}
-// if date = 'all' → no filter
+        $this->applyLiveQaOverviewDateFilter($query, $projectId, $dateStr, $fromDateTime, $toDateTime);
 
         // If no date specified → show all orders (no date filter)
 
@@ -668,16 +656,7 @@ elseif ($dateStr !== 'all') {
             ->where('drawer_name', '!=', '')
             ->whereNotNull('drawer_name');
 
-if ($fromDateTime && $toDateTime) {
-    $countQuery->whereBetween('received_at', [$fromDateTime, $toDateTime]);
-}
-elseif (!$dateStr || $dateStr === 'today') {
-    $countQuery->whereDate('received_at', now()->toDateString());
-}
-elseif ($dateStr !== 'all') {
-    $countQuery->whereDate('received_at', $dateStr);
-}
-// if date = 'all' → no filter
+        $this->applyLiveQaOverviewDateFilter($countQuery, $projectId, $dateStr, $fromDateTime, $toDateTime);
         // If no date specified → count all orders (matches main query)
 
         $todayTotal = (clone $countQuery)->count();
@@ -1206,8 +1185,6 @@ elseif ($dateStr !== 'all') {
         }
     }
 
-
-    
     private function resolveLiveQaReportRange(Request $request): array
     {
         $fromDateTime = $request->input('from_datetime');
@@ -1221,6 +1198,39 @@ elseif ($dateStr !== 'all') {
         $dateTo = $request->input('date_to') ?: now()->toDateString();
 
         return [$dateFrom, $dateTo, null, null];
+    }
+
+    private function applyLiveQaOverviewDateFilter($query, int $projectId, ?string $dateStr, ?string $fromDateTime, ?string $toDateTime): void
+    {
+        if ($fromDateTime && $toDateTime) {
+            $query->whereBetween('received_at', [$fromDateTime, $toDateTime]);
+            return;
+        }
+
+        if ($dateStr === 'all') {
+            return;
+        }
+
+        if ($projectId === 16) {
+            $timezone = 'Asia/Karachi';
+            $selectedDate = (!$dateStr || $dateStr === 'today')
+                ? now($timezone)->toDateString()
+                : $dateStr;
+
+            $windowEnd = \Carbon\Carbon::parse($selectedDate, $timezone)->setTime(22, 0, 0);
+            $windowStart = $windowEnd->copy()->subDay();
+
+            $query->where('received_at', '>=', $windowStart->format('Y-m-d H:i:s'))
+                ->where('received_at', '<', $windowEnd->format('Y-m-d H:i:s'));
+            return;
+        }
+
+        if (!$dateStr || $dateStr === 'today') {
+            $query->whereDate('received_at', now()->toDateString());
+            return;
+        }
+
+        $query->whereDate('received_at', $dateStr);
     }
 
     private function resolveProjectChecklistItems(int $projectId, ?string $layer = null)

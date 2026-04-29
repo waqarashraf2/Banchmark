@@ -422,11 +422,92 @@ export default function LiveQADashboard() {
       };
 
       const workerKey = getWorkerKeyByLayer(layer);
-      const clientByWorker = new Map<string, string>();
-
       const reportRows = Array.isArray((res.data as any)?.report_rows)
         ? ((res.data as any).report_rows as Array<Record<string, unknown>>)
         : [];
+
+      const checklistItems = Array.isArray(res.data.checklist_items) ? res.data.checklist_items : [];
+
+      const buildClientGroupedTeams = () => {
+        const clientMap = new Map<string, {
+          team_id: number;
+          team_name: string;
+          client_name: string | null;
+          workers: Map<string, {
+            name: string;
+            client_name: string | null;
+            plan_count: number;
+            items: Record<string, number>;
+            mistake_total: number;
+            orderNumbers: Set<string>;
+          }>;
+        }>();
+
+        reportRows.forEach((row) => {
+          const workerName = sanitizeText(row?.[workerKey]);
+          const clientName = getClientFromRow(row || {});
+          if (!workerName || !clientName) return;
+
+          const clientKey = clientName;
+          if (!clientMap.has(clientKey)) {
+            clientMap.set(clientKey, {
+              team_id: clientMap.size + 1,
+              team_name: clientName,
+              client_name: clientName,
+              workers: new Map(),
+            });
+          }
+
+          const clientGroup = clientMap.get(clientKey)!;
+          if (!clientGroup.workers.has(workerName)) {
+            const initialItems: Record<string, number> = {};
+            checklistItems.forEach((item) => {
+              initialItems[item] = 0;
+            });
+
+            clientGroup.workers.set(workerName, {
+              name: workerName,
+              client_name: clientName,
+              plan_count: 0,
+              items: initialItems,
+              mistake_total: 0,
+              orderNumbers: new Set<string>(),
+            });
+          }
+
+          const workerGroup = clientGroup.workers.get(workerName)!;
+          const orderNumber = sanitizeText(row.order_number);
+          if (orderNumber && !workerGroup.orderNumbers.has(orderNumber)) {
+            workerGroup.orderNumbers.add(orderNumber);
+            workerGroup.plan_count += 1;
+          }
+
+          let derivedMistakeTotal = 0;
+          checklistItems.forEach((item) => {
+            const rawValue = row[item];
+            const numericValue = Number(rawValue ?? 0);
+            const safeValue = Number.isFinite(numericValue) ? numericValue : 0;
+            workerGroup.items[item] = (workerGroup.items[item] || 0) + safeValue;
+            derivedMistakeTotal += safeValue;
+          });
+
+          const rowMistakeTotal = Number(row.total_mistakes ?? derivedMistakeTotal);
+          workerGroup.mistake_total += Number.isFinite(rowMistakeTotal) ? rowMistakeTotal : derivedMistakeTotal;
+        });
+
+        return Array.from(clientMap.values())
+          .map((team) => ({
+            team_id: team.team_id,
+            team_name: team.team_name,
+            client_name: team.client_name,
+            workers: Array.from(team.workers.values())
+              .map(({ orderNumbers, ...worker }) => worker)
+              .sort((a, b) => a.name.localeCompare(b.name)),
+          }))
+          .sort((a, b) => a.team_name.localeCompare(b.team_name));
+      };
+
+      const clientByWorker = new Map<string, string>();
 
       reportRows.forEach((row) => {
         const workerName = sanitizeText(row?.[workerKey]);
@@ -448,33 +529,35 @@ export default function LiveQADashboard() {
         }
       });
 
-      const normalizedTeams = (res.data.teams || []).map((team) => {
-        const teamClient = sanitizeText((team as any).client_name) || sanitizeText((team as any).client) || sanitizeText((team as any).clint_name);
+      const normalizedTeams = CLIENT_ADDRESS_PROJECT_IDS.includes(selectedProject) && reportRows.length > 0
+        ? buildClientGroupedTeams()
+        : (res.data.teams || []).map((team) => {
+          const teamClient = sanitizeText((team as any).client_name) || sanitizeText((team as any).client) || sanitizeText((team as any).clint_name);
 
-        const normalizedWorkers = (team.workers || []).map((workerRow) => {
-          const workerName = sanitizeText(workerRow.name);
-          const workerClient = sanitizeText((workerRow as any).client_name)
-            || sanitizeText((workerRow as any).client)
-            || sanitizeText((workerRow as any).clint_name)
-            || (workerName ? (clientByWorker.get(workerName) || '') : '');
+          const normalizedWorkers = (team.workers || []).map((workerRow) => {
+            const workerName = sanitizeText(workerRow.name);
+            const workerClient = sanitizeText((workerRow as any).client_name)
+              || sanitizeText((workerRow as any).client)
+              || sanitizeText((workerRow as any).clint_name)
+              || (workerName ? (clientByWorker.get(workerName) || '') : '');
+
+            return {
+              ...workerRow,
+              client_name: workerClient || null,
+            };
+          });
+
+          const fallbackWorkerClient = normalizedWorkers.find((w) => sanitizeText(w.client_name))?.client_name || null;
 
           return {
-            ...workerRow,
-            client_name: workerClient || null,
+            ...team,
+            client_name: teamClient || fallbackWorkerClient,
+            workers: normalizedWorkers,
           };
         });
 
-        const fallbackWorkerClient = normalizedWorkers.find((w) => sanitizeText(w.client_name))?.client_name || null;
-
-        return {
-          ...team,
-          client_name: teamClient || fallbackWorkerClient,
-          workers: normalizedWorkers,
-        };
-      });
-
       setMistakeTeams(normalizedTeams);
-      setMistakeChecklistItems(res.data.checklist_items || []);
+      setMistakeChecklistItems(checklistItems);
       setMistakeSummary(res.data.summary || { total_orders: 0, total_mistakes: 0 });
     } catch {
       setMistakeTeams([]);
@@ -1034,6 +1117,7 @@ export default function LiveQADashboard() {
                         return (pw[a.priority || 'normal'] ?? 2) - (pw[b.priority || 'normal'] ?? 2);
                       }).map((order, i) => {
                         const status = getOrderStatus(order);
+                        const receivedAt = (order as any).received_at || order.created_at;
                         const hasDrawerDone = order.drawer_done === 'yes';
                         const hasCheckerDone = order.checker_done === 'yes';
                         const checkerWaiting = !order.checker_name;
@@ -1061,14 +1145,14 @@ export default function LiveQADashboard() {
                             {/* Date + Receive Time */}
                             <td className="px-3 py-2 whitespace-nowrap">
                               <div className="text-xs font-medium text-slate-700">
-                                {order.created_at ? new Date(order.created_at).toLocaleDateString('en-GB', {
+                                {receivedAt ? new Date(receivedAt).toLocaleDateString('en-GB', {
                                   day: '2-digit', month: 'short'
                                 }) : '—'}
                               </div>
-                              {order.created_at && (
+                              {receivedAt && (
                                 <div className="text-[10px] text-blue-500 flex items-center gap-0.5 mt-0.5">
                                   <Clock className="w-2.5 h-2.5" />
-                                  {new Date(order.created_at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
+                                  {new Date(receivedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
                                 </div>
                               )}
                               {order.dassign_time && (
@@ -2334,8 +2418,8 @@ export default function LiveQADashboard() {
             )}
 
             {/* Summary cards */}
-              <div className="grid grid-cols-2 gap-3">
-                <div className="bg-brand-50 rounded-lg p-3 text-center ring-1 ring-brand-200">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="bg-brand-50 rounded-lg p-3 text-center ring-1 ring-brand-200">
                 <div className="text-3xl font-extrabold text-brand-700">{mistakeSummary.total_orders}</div>
                 <div className="text-[10px] text-brand-600 font-semibold uppercase">Orders Reviewed</div>
               </div>

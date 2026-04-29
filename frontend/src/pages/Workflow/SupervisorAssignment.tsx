@@ -101,6 +101,8 @@ export default function SupervisorAssignment() {
   const [workers, setWorkers] = useState<Record<string, AssignmentWorker[]>>({});
   const [orders, setOrders] = useState<AssignmentOrder[]>([]);
   const [totalOrders, setTotalOrders] = useState(0);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [lastPage, setLastPage] = useState(1);
   const [counts, setCounts] = useState({ today_total: 0, pending: 0, pending_by_drawer: 0, completed: 0, amends: 0, assigned: 0, unassigned: 0, rejected: 0 });
   const [dateStats, setDateStats] = useState<AssignmentDateStat[]>([]);
   const [roleCompletions, setRoleCompletions] = useState<Record<string, AssignmentRoleCompletion>>({});
@@ -145,6 +147,12 @@ export default function SupervisorAssignment() {
   const [cancellingOrderId, setCancellingOrderId] = useState<number | null>(null);
 
   const isProject16 = projectId === 16;
+  const selectedQueueInfo = useMemo(
+    () => queues.find((queue) => queue.queue_name === selectedQueue) || null,
+    [queues, selectedQueue]
+  );
+  const effectiveProjectId = projectId ?? selectedQueueInfo?.projects?.[0]?.id ?? null;
+  const shouldUseAssignmentPagination = effectiveProjectId === 1 || effectiveProjectId === 3 || effectiveProjectId === 16;
   const showClientSummaryCard = projectId === 9 || projectId === 46;
   const showCodeQueues = useMemo(() => ['Canada'], []);
   const hasDrawerAssignment = useCallback((order: AssignmentOrder) => {
@@ -193,11 +201,13 @@ export default function SupervisorAssignment() {
   }, []);
 
   /* Main data loader */
-  const loadData = useCallback(async (_page = 1, isRefresh = false) => {
+  const loadData = useCallback(async (page = 1, isRefresh = false) => {
     if (!selectedQueue) return;
     try {
       isRefresh ? setRefreshing(true) : setLoading(true);
-      const params: any = { per_page: 10000 };
+      const params: any = shouldUseAssignmentPagination
+        ? { page, per_page: 200 }
+        : { per_page: 10000 };
       if (statusFilter !== 'all' && statusFilter !== 'cancelled' && statusFilter !== 'unassigned' && statusFilter !== 'pending') {
         params.status = statusFilter;
       }
@@ -251,6 +261,8 @@ export default function SupervisorAssignment() {
         });
       });
       setTotalOrders(d.orders?.total ?? 0);
+      setCurrentPage(d.orders?.current_page ?? page);
+      setLastPage(d.orders?.last_page ?? 1);
       const defaultCounts = {
         today_total: 0,
         pending: 0,
@@ -276,15 +288,21 @@ export default function SupervisorAssignment() {
       setProjectLabel(d.project ? `${d.project.name} (${d.project.country})` : '');
     } catch (e) { console.error(e); }
     finally { setLoading(false); setRefreshing(false); }
+  }, [selectedQueue, shouldUseAssignmentPagination, statusFilter, searchQuery, startDate, endDate, selectedWorker]);
+
+  useEffect(() => {
+    setCurrentPage(1);
   }, [selectedQueue, statusFilter, searchQuery, startDate, endDate, selectedWorker]);
 
-  useEffect(() => { loadData(1); }, [loadData]);
+  useEffect(() => {
+    loadData(currentPage);
+  }, [currentPage, loadData]);
 
   /* Smart polling: auto-refresh when data changes */
   useSmartPolling({
     scope: 'orders',
     interval: 45_000,
-    onDataChanged: () => loadData(1, true),
+    onDataChanged: () => loadData(currentPage, true),
     enabled: !!selectedQueue,
   });
 
@@ -302,7 +320,7 @@ export default function SupervisorAssignment() {
         return next;
       });
       setShowReassign(null); setReassignReason('');
-      loadData(1, true);
+      loadData(currentPage, true);
     } catch (e) { console.error(e); }
     finally { setReassigning(false); }
   };
@@ -324,7 +342,7 @@ export default function SupervisorAssignment() {
       setResumingOrderId(orderId);
       await workflowService.resumeOrder(orderId, projectId);
       toast({ title: 'Order resumed', description: 'Order has been returned to the workflow.', type: 'success' });
-      loadData(1, true);
+      loadData(currentPage, true);
     } catch (e: any) {
       console.error(e);
       toast({ title: 'Resume failed', description: e?.response?.data?.message || 'Could not resume order.', type: 'error' });
@@ -372,10 +390,17 @@ export default function SupervisorAssignment() {
   }, [filteredWorkers, workerSearch]);
 
   /* Sort orders by priority first, then by least remaining time within each priority group. */
-  const priorityWeight: Record<string, number> = { rush: 0, urgent: 0, high: 1, normal: 2, low: 3 };
+  const priorityWeight: Record<string, number> = {
+    urgent: 0,
+    rush: 0,
+    priority: 1,
+    high: 1,
+    normal: 2,
+    low: 3,
+  };
   const getPriorityWeight = useCallback((priority?: string | null) => {
     const normalizedPriority = (priority || '').toString().trim().toLowerCase();
-    return priorityWeight[normalizedPriority] ?? 3;
+    return priorityWeight[normalizedPriority] ?? 4;
   }, [priorityWeight]);
   const getRoleSignalScore = useCallback((order: AssignmentOrder, role: 'drawer' | 'checker' | 'qa') => {
     const hasText = (value: unknown) => typeof value === 'string' && value.trim() !== '';
@@ -418,22 +443,21 @@ export default function SupervisorAssignment() {
     });
   }, []);
   const pendingOrderCount = useMemo(
-    () => orders.filter(isPendingOrder).length,
-    [isPendingOrder, orders]
+    () => (typeof counts.pending === 'number' ? counts.pending : orders.filter(isPendingOrder).length),
+    [counts.pending, isPendingOrder, orders]
   );
   const unassignedOrderCount = useMemo(
-    () => orders.filter((order) => !hasDrawerAssignment(order)).length,
-    [hasDrawerAssignment, orders]
+    () => (typeof counts.unassigned === 'number' ? counts.unassigned : orders.filter((order) => !hasDrawerAssignment(order)).length),
+    [counts.unassigned, hasDrawerAssignment, orders]
   );
   const currentProjectDate = useMemo(() => {
     return getProjectDateValue(projectTz);
   }, [projectTz]);
   const isPhotoEnhancementQueue = useMemo(() => {
-    const selectedQueueInfo = queues.find((queue) => queue.queue_name === selectedQueue);
     const workflowType = queueInfo?.workflow_type || selectedQueueInfo?.workflow_type || '';
 
     return workflowType === 'PH_2_LAYER';
-  }, [queueInfo?.workflow_type, queues, selectedQueue]);
+  }, [queueInfo?.workflow_type, selectedQueueInfo?.workflow_type]);
   const getEffectiveAssignmentRole = useCallback((role: 'drawer' | 'checker' | 'filler' | 'qa') => {
     if (isPhotoEnhancementQueue && role === 'drawer') {
       return 'designer';
@@ -451,6 +475,7 @@ export default function SupervisorAssignment() {
     if (role === 'checker') return 'Checker';
     return 'Drawer';
   }, [isPhotoEnhancementQueue]);
+  const usesPrioritySummaryCount = projectId === 1 || projectId === 3;
   const visiblePriorityCounts = useMemo(() => {
     const derivedCounts = displayedOrders.reduce(
       (acc, order) => {
@@ -458,6 +483,8 @@ export default function SupervisorAssignment() {
 
         if (normalizedPriority === 'high') {
           acc.high += 1;
+        } else if (normalizedPriority === 'priority') {
+          acc.priority += 1;
         } else if (normalizedPriority === 'rush') {
           acc.rush += 1;
         } else if (normalizedPriority === 'urgent') {
@@ -468,7 +495,7 @@ export default function SupervisorAssignment() {
 
         return acc;
       },
-      { high: 0, normal: 0, rush: 0, urgent: 0 }
+      { high: 0, priority: 0, normal: 0, rush: 0, urgent: 0 }
     );
 
     if (statusFilter === 'all' && dateStats.length > 0) {
@@ -493,6 +520,7 @@ export default function SupervisorAssignment() {
       return {
         ...derivedCounts,
         high: filteredDateStats.reduce((sum, stat) => sum + (stat.high || 0), 0),
+        priority: filteredDateStats.reduce((sum, stat) => sum + (stat.priority || 0), 0),
         normal: filteredDateStats.reduce((sum, stat) => sum + (stat.regular || 0), 0),
       };
     }
@@ -710,24 +738,22 @@ export default function SupervisorAssignment() {
     }
     return null;
   }, [projectTz]);
-
-  const sortedOrders = useMemo(() => {
+  const compareOrdersByPriorityAndTime = useCallback((a: AssignmentOrder, b: AssignmentOrder) => {
     const toRemainingMs = (order: AssignmentOrder) => {
       const ms = parseDueIn(order.due_in, order.received_at);
       return ms == null ? Number.POSITIVE_INFINITY : ms;
     };
 
-    const baseComparator = (a: AssignmentOrder, b: AssignmentOrder) => {
-      const priorityDiff = getPriorityWeight(a.priority) - getPriorityWeight(b.priority);
-      if (priorityDiff !== 0) return priorityDiff;
+    const priorityDiff = getPriorityWeight(a.priority) - getPriorityWeight(b.priority);
+    if (priorityDiff !== 0) return priorityDiff;
 
-      const remainingDiff = toRemainingMs(a) - toRemainingMs(b);
-      if (remainingDiff !== 0) return remainingDiff;
+    const remainingDiff = toRemainingMs(a) - toRemainingMs(b);
+    if (remainingDiff !== 0) return remainingDiff;
 
-      return (a.id ?? 0) - (b.id ?? 0);
-    };
-
-    return [...displayedOrders].sort((a, b) => {
+    return (a.id ?? 0) - (b.id ?? 0);
+  }, [getPriorityWeight, parseDueIn]);
+  const sortOrdersForDisplay = useCallback((inputOrders: AssignmentOrder[]) => {
+    return [...inputOrders].sort((a, b) => {
       if (roleSortState.role && roleSortState.mode !== 'default') {
         const aHasSignal = getRoleSignalScore(a, roleSortState.role);
         const bHasSignal = getRoleSignalScore(b, roleSortState.role);
@@ -741,9 +767,11 @@ export default function SupervisorAssignment() {
         }
       }
 
-      return baseComparator(a, b);
+      return compareOrdersByPriorityAndTime(a, b);
     });
-  }, [displayedOrders, getPriorityWeight, getRoleSignalScore, parseDueIn, roleSortState]);
+  }, [compareOrdersByPriorityAndTime, getRoleSignalScore, roleSortState]);
+
+  const sortedOrders = useMemo(() => sortOrdersForDisplay(displayedOrders), [displayedOrders, sortOrdersForDisplay]);
 
   /** Render remaining time badge with colour coding */
   const RemainingBadge = ({ dueIn, receivedAt }: { dueIn: string | null; receivedAt?: string | null }) => {
@@ -816,7 +844,7 @@ export default function SupervisorAssignment() {
       const roleLabel = role === 'drawer' && isPhotoEnhancementQueue ? 'designer' : role;
       toast({ type: 'success', title: 'Assigned', description: res.data?.message || `${roleLabel} assigned successfully` });
       // Also refresh from server to ensure consistency
-      loadData(1, true);
+      loadData(currentPage, true);
     } catch (e: any) {
       console.error(e);
       toast({ type: 'error', title: 'Assignment Failed', description: e?.response?.data?.message || 'Could not assign role' });
@@ -853,13 +881,13 @@ export default function SupervisorAssignment() {
   };
 
   /* Determine if a role stage has not been reached yet */
-  const DESIGN_STAGES = ['QUEUED_DESIGN', 'IN_DESIGN', 'SUBMITTED_DESIGN'];
+  const DESIGN_STAGES = ['RECEIVED', 'QUEUED_DESIGN', 'IN_DESIGN', 'SUBMITTED_DESIGN'];
   const DRAW_STAGES = ['RECEIVED', 'QUEUED_DRAW', 'IN_DRAW', 'SUBMITTED_DRAW', 'PENDING_QA_REVIEW'];
   const FILLER_WAIT_STAGES = [...DRAW_STAGES, 'QUEUED_CHECK', 'IN_CHECK'];
   // For PH_2_LAYER queues, QA must wait while design is still in progress.
   const QA_WAIT_STAGES = isPhotoEnhancementQueue
-    ? [...DESIGN_STAGES, 'QUEUED_CHECK', 'IN_CHECK', 'SUBMITTED_CHECK']
-    : ['QUEUED_CHECK', 'IN_CHECK', 'SUBMITTED_CHECK'];
+    ? DESIGN_STAGES
+    : [...DRAW_STAGES, 'QUEUED_CHECK', 'IN_CHECK', 'SUBMITTED_CHECK'];
   const isWaiting = (ws: string | undefined, role: 'drawer' | 'checker' | 'filler' | 'qa'): boolean => {
     if (!ws) return false;
     if (role === 'checker') return DRAW_STAGES.includes(ws);
@@ -1177,11 +1205,14 @@ export default function SupervisorAssignment() {
     return selectedRoleColumns;
   }, [isPhotoEnhancementQueue, projectColumns]);
   const exportColumns = useMemo(() => {
-    const primaryColumns = [...dynamicPrimaryColumns];
+    const primaryColumns = dynamicPrimaryColumns
+      .filter((column) => column.key !== 'area')
+      .map((column) => ({ ...column }));
 
-    if (!primaryColumns.some((column) => column.key === 'area')) {
-      primaryColumns.push({ key: 'area', label: 'Area' });
-    }
+    primaryColumns.push(
+      { key: 'area_feet', label: 'Area Feet' },
+      { key: 'area_meter', label: 'Area Meter' },
+    );
 
     return [
       ...primaryColumns,
@@ -1189,10 +1220,61 @@ export default function SupervisorAssignment() {
       { key: 'workflow_state', label: 'Status' },
     ];
   }, [dynamicPrimaryColumns, visibleRoleColumns]);
-  const monthOrders = useMemo(() => {
-    if (!exportMonth) return [];
-    return sortedOrders.filter((order) => fmtOrderMonthKey(order) === exportMonth);
-  }, [exportMonth, fmtOrderMonthKey, sortedOrders]);
+  const buildAssignmentExportParams = useCallback((page: number, perPage: number) => {
+    const params: Record<string, string | number> = { page, per_page: perPage };
+
+    if (statusFilter !== 'all' && statusFilter !== 'cancelled' && statusFilter !== 'unassigned' && statusFilter !== 'pending') {
+      params.status = statusFilter;
+    }
+    if (searchQuery) params.search = searchQuery;
+    if (startDate) params.start_date = startDate;
+    if (endDate) params.end_date = endDate;
+    if (selectedWorker) params.assigned_to = selectedWorker;
+
+    return params;
+  }, [endDate, searchQuery, selectedWorker, startDate, statusFilter]);
+
+  const fetchAllOrdersForExport = useCallback(async () => {
+    const perPage = 2000;
+    const allOrders: AssignmentOrder[] = [];
+    let page = 1;
+    let lastAvailablePage = 1;
+
+    do {
+      const res = await dashboardService.assignmentDashboard(selectedQueue, buildAssignmentExportParams(page, perPage));
+      const fetchedOrders = (res.data?.orders?.data ?? []) as AssignmentOrder[];
+      allOrders.push(...fetchedOrders);
+
+      const responseLastPage = Number(res.data?.orders?.last_page ?? page);
+      lastAvailablePage = Number.isFinite(responseLastPage) && responseLastPage > 0 ? responseLastPage : page;
+      page += 1;
+    } while (page <= lastAvailablePage);
+
+    const filteredOrders = allOrders.filter((order) => {
+      if (statusFilter === 'cancelled') {
+        return (order.workflow_state || '').toUpperCase().includes('CANCEL');
+      }
+
+      if (statusFilter === 'pending') {
+        return isPendingOrder(order);
+      }
+
+      if (statusFilter === 'unassigned') {
+        return !hasDrawerAssignment(order);
+      }
+
+      return true;
+    });
+
+    return sortOrdersForDisplay(filteredOrders);
+  }, [
+    buildAssignmentExportParams,
+    hasDrawerAssignment,
+    isPendingOrder,
+    selectedQueue,
+    sortOrdersForDisplay,
+    statusFilter,
+  ]);
 
   const formatAreaForExport = useCallback((value: unknown) => {
     if (value == null) return '-';
@@ -1218,12 +1300,56 @@ export default function SupervisorAssignment() {
     return `${meterDisplay}m/${squareFeetValue}f`;
   }, []);
 
+  const getAreaExportParts = useCallback((order: AssignmentOrder) => {
+    const metadata = ((order as any).metadata || {}) as Record<string, unknown>;
+    const areaValue = (order as any).area ?? metadata.enter_area ?? metadata.area;
+
+    if (areaValue == null) {
+      return { meter: '-', feet: '-' };
+    }
+
+    const raw = String(areaValue).trim();
+    if (raw === '') {
+      return { meter: '-', feet: '-' };
+    }
+
+    const numericCandidate = raw.replace(/,/g, '');
+    if (!/^\d+(\.\d+)?$/.test(numericCandidate)) {
+      return { meter: raw, feet: raw };
+    }
+
+    const meterValue = Number(numericCandidate);
+    if (!Number.isFinite(meterValue)) {
+      return { meter: raw, feet: raw };
+    }
+
+    const meterDisplay = Number.isInteger(meterValue)
+      ? String(meterValue)
+      : meterValue.toFixed(2).replace(/\.?0+$/, '');
+
+    return {
+      meter: meterDisplay,
+      feet: String(Math.round(meterValue * 10.7639)),
+    };
+  }, []);
+
+  const fmtExportDate = useCallback((t: string | null) => {
+    const parsed = parseDisplayDateValue(t);
+    if (!parsed) return '-';
+
+    return `${Number(parsed.month)}/${Number(parsed.day)}/${parsed.year}`;
+  }, [parseDisplayDateValue]);
+
+  const fmtOrderExportDate = useCallback((order: AssignmentOrder) => {
+    return fmtExportDate(getOrderDisplayDateSource(order));
+  }, [fmtExportDate, getOrderDisplayDateSource]);
+
   const getExportValue = (order: AssignmentOrder, key: string) => {
     switch (key) {
       case '__display_date':
-        return fmtOrderDisplayDate(order);
+        return fmtOrderExportDate(order);
       case 'received_at':
-        return fmtProjectDateTime(order.received_at);
+        return fmtExportDate(order.received_at);
       case '__received_time':
         return fmtReceivedTime(order.received_at);
       case '__batch_number':
@@ -1243,11 +1369,12 @@ export default function SupervisorAssignment() {
       }
       case 'workflow_state':
         return (order.workflow_state || 'PENDING').replace(/_/g, ' ');
-      case 'area': {
-        const metadata = ((order as any).metadata || {}) as Record<string, unknown>;
-        const areaValue = (order as any).area ?? metadata.enter_area ?? metadata.area;
-        return formatAreaForExport(areaValue);
-      }
+      case 'area':
+        return formatAreaForExport((order as any).area ?? (((order as any).metadata || {}) as Record<string, unknown>).enter_area ?? (((order as any).metadata || {}) as Record<string, unknown>).area);
+      case 'area_feet':
+        return getAreaExportParts(order).feet;
+      case 'area_meter':
+        return getAreaExportParts(order).meter;
       default: {
         const value = (order as any)[key];
         return value == null || value === '' ? '-' : String(value);
@@ -1271,17 +1398,20 @@ export default function SupervisorAssignment() {
       return;
     }
 
-    if (monthOrders.length === 0) {
-      toast({ title: 'No orders found', description: 'No orders are available for the selected month.', type: 'error' });
-      return;
-    }
-
     const filenameBase = `${selectedQueue || 'orders'}_${exportMonth}`;
-    const headers = exportColumns.map((column) => column.label);
-    const rows = monthOrders.map((order) => exportColumns.map((column) => getExportValue(order, column.key)));
 
     try {
       setExportingType(type);
+      const exportOrders = await fetchAllOrdersForExport();
+      const monthFilteredOrders = exportOrders.filter((order) => fmtOrderMonthKey(order) === exportMonth);
+
+      if (monthFilteredOrders.length === 0) {
+        toast({ title: 'No orders found', description: 'No orders are available for the selected month.', type: 'error' });
+        return;
+      }
+
+      const headers = exportColumns.map((column) => column.label);
+      const rows = monthFilteredOrders.map((order) => exportColumns.map((column) => getExportValue(order, column.key)));
 
       if (type === 'csv') {
         const csv = [
@@ -1312,7 +1442,7 @@ export default function SupervisorAssignment() {
         doc.save(`${filenameBase}.pdf`);
       }
 
-      toast({ title: `Month ${type.toUpperCase()} ready`, description: `${monthOrders.length} orders exported.`, type: 'success' });
+      toast({ title: `Month ${type.toUpperCase()} ready`, description: `${monthFilteredOrders.length} orders exported.`, type: 'success' });
     } catch (error) {
       console.error(error);
       toast({ title: 'Export failed', description: `Could not export ${type.toUpperCase()}.`, type: 'error' });
@@ -1326,6 +1456,8 @@ export default function SupervisorAssignment() {
     const rawValue = column.key === 'instruction'
       ? instructionValue
       : (order as any)[column.key];
+    const orderNumberValue = typeof order.order_number === 'string' ? order.order_number.trim() : '';
+    const shouldExpandOrderNumber = orderNumberValue !== '' && !orderNumberValue.includes(' ');
     const isContextMenuCell = column.key === 'order_number' || column.key === 'address';
     const contextMenuCellProps = isContextMenuCell
       ? {
@@ -1408,9 +1540,9 @@ export default function SupervisorAssignment() {
         return (
           <td
             {...contextMenuCellProps}
-            className={`${column.cellClassName || 'px-3 py-2'} ${isContextMenuCell ? 'cursor-context-menu' : ''}`}
+            className={`${column.cellClassName || 'px-3 py-2'} ${isContextMenuCell ? 'cursor-context-menu' : ''} ${shouldExpandOrderNumber ? 'min-w-[220px]' : ''}`}
           >
-            <div className="font-semibold text-slate-900">{order.order_number || '-'}</div>
+            <div className={`font-semibold text-slate-900 ${shouldExpandOrderNumber ? 'break-all' : ''}`}>{order.order_number || '-'}</div>
             {order.amend && (
               <span className="text-[10px] text-amber-600 font-medium">AMEND</span>
             )}
@@ -1531,7 +1663,7 @@ export default function SupervisorAssignment() {
         description: res.data?.message || `Order ${targetOrder.order_number} has been cancelled.`,
         type: 'success',
       });
-      loadData(1, true);
+      loadData(currentPage, true);
     } catch (e: any) {
       console.error(e);
       toast({
@@ -1590,7 +1722,7 @@ export default function SupervisorAssignment() {
         description: res.data?.message || `${(showPlanTypeEditor || showCodeEditor) ? 'Instruction, plan type, and code' : 'Instruction'} saved for order ${targetOrder.order_number}.`,
         type: 'success',
       });
-      loadData(1, true);
+      loadData(currentPage, true);
     } catch (e: any) {
       console.error(e);
       toast({
@@ -1846,7 +1978,7 @@ export default function SupervisorAssignment() {
                 <div className="text-right">
                   <ClockDisplay timezone={projectTz} className="text-sm font-semibold text-slate-800 font-mono" />
                 </div>
-                <Button variant="secondary" icon={RefreshCw} onClick={() => loadData(1, true)} disabled={refreshing}>
+                <Button variant="secondary" icon={RefreshCw} onClick={() => loadData(currentPage, true)} disabled={refreshing}>
                   {refreshing ? 'Refreshing...' : 'Refresh'}
                 </Button>
               </div>
@@ -1954,7 +2086,9 @@ export default function SupervisorAssignment() {
                   ))}
                   {!isProject16 && (
                     <>
-                      <span className="border-l border-slate-300 pl-4 text-red-600 font-semibold">High: {visiblePriorityCounts.high}</span>
+                      <span className="border-l border-slate-300 pl-4 text-red-600 font-semibold">
+                        {usesPrioritySummaryCount ? 'Priority' : 'High'}: {usesPrioritySummaryCount ? visiblePriorityCounts.priority : visiblePriorityCounts.high}
+                      </span>
                       <span className="text-slate-600 font-semibold">Normal: {visiblePriorityCounts.normal}</span>
                       {visiblePriorityCounts.rush > 0 && (
                         <span className="text-purple-600 font-semibold">Rush: {visiblePriorityCounts.rush}</span>
@@ -2330,8 +2464,31 @@ export default function SupervisorAssignment() {
 
               {/* Total count */}
               {((statusFilter === 'cancelled' || statusFilter === 'unassigned' || statusFilter === 'pending') ? sortedOrders.length : totalOrders) > 0 && (
-                <div className="px-4 py-2 border-t border-slate-100 bg-slate-50/50">
-                  <span className="text-xs text-slate-500">{(statusFilter === 'cancelled' || statusFilter === 'unassigned' || statusFilter === 'pending') ? sortedOrders.length : totalOrders} orders</span>
+                <div className="px-4 py-2 border-t border-slate-100 bg-slate-50/50 flex items-center justify-between gap-3">
+                  <span className="text-xs text-slate-500">
+                    {(statusFilter === 'cancelled' || statusFilter === 'unassigned' || statusFilter === 'pending') ? sortedOrders.length : totalOrders} orders
+                    {shouldUseAssignmentPagination && lastPage > 1 ? ` • Page ${currentPage} of ${lastPage}` : ''}
+                  </span>
+                  {shouldUseAssignmentPagination && lastPage > 1 && (
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setCurrentPage((prev) => Math.max(prev - 1, 1))}
+                        disabled={currentPage <= 1 || loading || refreshing}
+                        className="px-3 py-1 rounded-md border border-slate-200 bg-white text-xs font-medium text-slate-600 transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        Previous
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setCurrentPage((prev) => Math.min(prev + 1, lastPage))}
+                        disabled={currentPage >= lastPage || loading || refreshing}
+                        className="px-3 py-1 rounded-md border border-slate-200 bg-white text-xs font-medium text-slate-600 transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        Next
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
